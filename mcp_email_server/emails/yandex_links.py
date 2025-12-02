@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import aioimaplib
 
 from mcp_email_server import cache
+from mcp_email_server.emails.imap_connection import IMAPConnectionManager
 from mcp_email_server.log import logger
 
 
@@ -119,13 +120,31 @@ class YandexLinkCalculator:
     based on a known baseline.
     """
 
-    def __init__(self, email_settings: "EmailSettings"):
+    def __init__(
+        self,
+        email_settings: "EmailSettings",
+        imap_manager: IMAPConnectionManager | None = None,
+    ):
         self.email_settings = email_settings
         self.baseline: "YandexLinkConfig" = email_settings.yandex_link  # type: ignore
         self.account = email_settings.account_name
+        self._synced = False  # Track if we've already synced in this session
+
+        # Use provided connection manager or create our own
+        if imap_manager is not None:
+            self._imap_manager = imap_manager
+            self._owns_manager = False
+        else:
+            self._imap_manager = IMAPConnectionManager(email_settings.incoming)
+            self._owns_manager = True
 
         # Ensure cache is initialized
         cache.init_db()
+
+    async def close(self) -> None:
+        """Close connection if we own it."""
+        if self._owns_manager:
+            await self._imap_manager.close()
 
     async def get_web_url(self, folder: str, uid: int) -> str:
         """Get web URL for a message.
@@ -143,14 +162,16 @@ class YandexLinkCalculator:
             logger.debug(f"Cache hit for {self.account}/{folder}/{uid}: {cached_web_id}")
             return self._format_url(cached_web_id, folder)
 
-        # 2. Cache miss - need to sync
-        logger.info(f"Cache miss for {self.account}/{folder}/{uid}, syncing...")
-        await self._sync_messages()
+        # 2. Cache miss - sync only once per session to avoid repeated slow syncs
+        if not self._synced:
+            logger.info(f"Cache miss for {self.account}/{folder}/{uid}, syncing...")
+            await self._sync_messages()
+            self._synced = True
 
-        # 3. Lookup again (should exist now)
-        web_id = cache.get_web_id(self.account, folder, uid)
-        if web_id:
-            return self._format_url(web_id, folder)
+            # 3. Lookup again (should exist now)
+            web_id = cache.get_web_id(self.account, folder, uid)
+            if web_id:
+                return self._format_url(web_id, folder)
 
         # 4. If still not found, the message might be older than baseline
         # Fall back to baseline URL (user can navigate from there)
@@ -182,73 +203,56 @@ class YandexLinkCalculator:
 
         logger.info(f"Syncing messages for {self.account} since {since_date}")
 
-        # Connect to IMAP
-        imap = aioimaplib.IMAP4_SSL(
-            self.email_settings.incoming.host,
-            self.email_settings.incoming.port
-        )
+        # Use connection manager
+        imap = await self._imap_manager.ensure_connected()
 
-        try:
-            await imap._client_task
-            await imap.wait_hello_from_server()
-            await imap.login(
-                self.email_settings.incoming.user_name,
-                self.email_settings.incoming.password
-            )
+        # Get all folders
+        folders = await self._get_all_folders(imap)
+        logger.info(f"Found {len(folders)} folders")
 
-            # Get all folders
-            folders = await self._get_all_folders(imap)
-            logger.info(f"Found {len(folders)} folders")
+        # Fetch messages from all folders
+        all_messages = []
+        for folder in folders:
+            messages = await self._fetch_folder_messages(imap, folder, since_date)
+            all_messages.extend(messages)
 
-            # Fetch messages from all folders
-            all_messages = []
-            for folder in folders:
-                messages = await self._fetch_folder_messages(imap, folder, since_date)
-                all_messages.extend(messages)
+        if not all_messages:
+            logger.info("No new messages to sync")
+            return
 
-            if not all_messages:
-                logger.info("No new messages to sync")
-                return
+        # Sort by date
+        all_messages.sort(key=lambda m: m["internal_date"])
 
-            # Sort by date
-            all_messages.sort(key=lambda m: m["internal_date"])
+        # Find baseline position in sorted list
+        baseline_key = (self.baseline.baseline_folder, self.baseline.baseline_uid)
+        baseline_pos = None
+        for i, msg in enumerate(all_messages):
+            msg_key = (msg["folder"], msg["uid"])
+            if msg_key == baseline_key:
+                baseline_pos = i
+                break
 
-            # Find baseline position in sorted list
-            baseline_key = (self.baseline.baseline_folder, self.baseline.baseline_uid)
-            baseline_pos = None
+        # Assign web_ids relative to baseline position
+        # web_id = baseline_web_id + (position - baseline_position)
+        if baseline_pos is not None:
             for i, msg in enumerate(all_messages):
-                msg_key = (msg["folder"], msg["uid"])
-                if msg_key == baseline_key:
-                    baseline_pos = i
-                    break
+                msg["web_id"] = self.baseline.baseline_web_id + (i - baseline_pos)
+        else:
+            # Baseline not in list - use start_web_id for incremental sync
+            current_web_id = start_web_id
+            for msg in all_messages:
+                current_web_id += 1
+                msg["web_id"] = current_web_id
 
-            # Assign web_ids relative to baseline position
-            # web_id = baseline_web_id + (position - baseline_position)
-            if baseline_pos is not None:
-                for i, msg in enumerate(all_messages):
-                    msg["web_id"] = self.baseline.baseline_web_id + (i - baseline_pos)
-            else:
-                # Baseline not in list - use start_web_id for incremental sync
-                current_web_id = start_web_id
-                for msg in all_messages:
-                    current_web_id += 1
-                    msg["web_id"] = current_web_id
+        # Bulk insert to cache
+        cache.bulk_insert_messages(self.account, all_messages)
 
-            # Bulk insert to cache
-            cache.bulk_insert_messages(self.account, all_messages)
-
-            # Update sync state
-            if all_messages:
-                newest_date = datetime.fromisoformat(all_messages[-1]["internal_date"])
-                newest_web_id = all_messages[-1]["web_id"]
-                cache.update_sync_state(self.account, newest_date, newest_web_id)
-                logger.info(f"Synced {len(all_messages)} messages, max_web_id={newest_web_id}")
-
-        finally:
-            try:
-                await imap.logout()
-            except Exception as e:
-                logger.debug(f"Error during IMAP logout: {e}")
+        # Update sync state
+        if all_messages:
+            newest_date = datetime.fromisoformat(all_messages[-1]["internal_date"])
+            newest_web_id = all_messages[-1]["web_id"]
+            cache.update_sync_state(self.account, newest_date, newest_web_id)
+            logger.info(f"Synced {len(all_messages)} messages, max_web_id={newest_web_id}")
 
     async def _get_all_folders(self, imap) -> list[str]:
         """Get list of all IMAP folders."""

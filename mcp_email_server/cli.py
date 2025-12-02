@@ -46,5 +46,18 @@ def reset():
     typer.echo("✅ Config reset")
 
 
+@app.command()
+def debug(
+    host: str = "0.0.0.0",
+    port: int = 7860,
+    root_path: str = "",
+):
+    """Run debug server to expose message data for URL verification."""
+    from mcp_email_server.debug_server import run_server
+
+    typer.echo(f"Starting debug server at http://{host}:{port}")
+    run_server(host=host, port=port, root_path=root_path)
+
+
 if __name__ == "__main__":
     app(["stdio"])
