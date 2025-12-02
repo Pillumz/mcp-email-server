@@ -34,6 +34,8 @@ SENT_FOLDER_NAMES = [
     "Sent Items",
     "Sent Messages",
     "[Gmail]/Sent Mail",
+    "Отправленные",  # Yandex (Russian)
+    "&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-",  # Yandex UTF-7 encoded
     "INBOX/Sent",
 ]
 
@@ -663,9 +665,10 @@ class EmailClient:
     async def _find_sent_folder(self, imap) -> str | None:
         """Find the Sent folder name for this IMAP server."""
         try:
-            _, folders_data = await imap.list()
-            if not folders_data:
+            result = await imap.list('""', '"*"')
+            if result.result != "OK" or not result.lines:
                 return None
+            folders_data = result.lines
 
             # Parse folder names from LIST response
             available_folders = []
@@ -684,13 +687,16 @@ class EmailClient:
             # Try to find a matching Sent folder
             for sent_name in SENT_FOLDER_NAMES:
                 for folder in available_folders:
-                    if folder.lower() == sent_name.lower() or folder.lower().endswith(sent_name.lower()):
-                        logger.info(f"Found Sent folder: {folder}")
+                    # Decode folder name from IMAP UTF-7 for comparison
+                    decoded_folder = decode_imap_utf7(folder)
+                    if decoded_folder.lower() == sent_name.lower() or decoded_folder.lower().endswith(sent_name.lower()):
+                        logger.info(f"Found Sent folder: {folder} (decoded: {decoded_folder})")
                         return folder
 
             # Fallback: look for any folder containing "sent" (case-insensitive)
             for folder in available_folders:
-                if "sent" in folder.lower():
+                decoded_folder = decode_imap_utf7(folder)
+                if "sent" in decoded_folder.lower() or "отправлен" in decoded_folder.lower():
                     logger.info(f"Found Sent folder (fallback): {folder}")
                     return folder
 
@@ -718,7 +724,8 @@ class EmailClient:
             msg_bytes = msg.as_bytes()
 
             # Append to Sent folder with \Seen flag
-            result = await imap.append(sent_folder, msg_bytes, flags=["\\Seen"])
+            # Note: aioimaplib.append takes (message_bytes, mailbox, flags, date)
+            result = await imap.append(msg_bytes, mailbox=sent_folder, flags="(\\Seen)")
             logger.info(f"Saved message to Sent folder: {result}")
             return True
 
