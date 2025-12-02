@@ -20,7 +20,7 @@ def sse(
 ):
     mcp.settings.host = host
     mcp.settings.port = port
-    mcp.run(transport="sse")
+    mcp.run(transport="streamable-http")
 
 
 @app.command()

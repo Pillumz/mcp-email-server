@@ -44,6 +44,8 @@ class EmailHandler(abc.ABC):
         bcc: list[str] | None = None,
         html: bool = False,
         attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
     ) -> None:
         """
         Send email
@@ -64,4 +66,23 @@ class EmailHandler(abc.ABC):
     ) -> "AttachmentDownloadResponse":
         """
         Download an email attachment and save it to the specified path
+        """
+
+    @abc.abstractmethod
+    async def reply_to_email(
+        self,
+        email_id: str,
+        body: str,
+        reply_all: bool = False,
+        html: bool = False,
+        attachments: list[str] | None = None,
+    ) -> str:
+        """
+        Reply to an email, setting proper threading headers (In-Reply-To, References)
+        """
+
+    @abc.abstractmethod
+    async def list_folders(self) -> list[str]:
+        """
+        List all available folders/mailboxes in the email account
         """

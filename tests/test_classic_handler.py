@@ -147,28 +147,32 @@ class TestClassicEmailHandler:
         """Test send_email method."""
         # Mock the outgoing_client.send_email method
         mock_send = AsyncMock()
+        mock_save_to_sent = AsyncMock()
 
-        # Apply the mock
+        # Apply the mocks
         with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
-            # Call the method
-            await classic_handler.send_email(
-                recipients=["recipient@example.com"],
-                subject="Test Subject",
-                body="Test Body",
-                cc=["cc@example.com"],
-                bcc=["bcc@example.com"],
-            )
+            with patch.object(classic_handler.outgoing_client, "save_to_sent_folder", mock_save_to_sent):
+                # Call the method
+                await classic_handler.send_email(
+                    recipients=["recipient@example.com"],
+                    subject="Test Subject",
+                    body="Test Body",
+                    cc=["cc@example.com"],
+                    bcc=["bcc@example.com"],
+                )
 
-            # Verify the client method was called correctly
-            mock_send.assert_called_once_with(
-                ["recipient@example.com"],
-                "Test Subject",
-                "Test Body",
-                ["cc@example.com"],
-                ["bcc@example.com"],
-                False,
-                None,
-            )
+                # Verify the client method was called correctly
+                mock_send.assert_called_once_with(
+                    ["recipient@example.com"],
+                    "Test Subject",
+                    "Test Body",
+                    ["cc@example.com"],
+                    ["bcc@example.com"],
+                    False,
+                    None,
+                    None,
+                    None,
+                )
 
     @pytest.mark.asyncio
     async def test_send_email_with_attachments(self, classic_handler, tmp_path):
@@ -179,27 +183,31 @@ class TestClassicEmailHandler:
 
         # Mock the outgoing_client.send_email method
         mock_send = AsyncMock()
+        mock_save_to_sent = AsyncMock()
 
-        # Apply the mock
+        # Apply the mocks
         with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
-            # Call the method with attachments
-            await classic_handler.send_email(
-                recipients=["recipient@example.com"],
-                subject="Test Subject",
-                body="Test Body with attachment",
-                attachments=[str(test_file)],
-            )
+            with patch.object(classic_handler.outgoing_client, "save_to_sent_folder", mock_save_to_sent):
+                # Call the method with attachments
+                await classic_handler.send_email(
+                    recipients=["recipient@example.com"],
+                    subject="Test Subject",
+                    body="Test Body with attachment",
+                    attachments=[str(test_file)],
+                )
 
-            # Verify the client method was called correctly with attachments
-            mock_send.assert_called_once_with(
-                ["recipient@example.com"],
-                "Test Subject",
-                "Test Body with attachment",
-                None,
-                None,
-                False,
-                [str(test_file)],
-            )
+                # Verify the client method was called correctly with attachments
+                mock_send.assert_called_once_with(
+                    ["recipient@example.com"],
+                    "Test Subject",
+                    "Test Body with attachment",
+                    None,
+                    None,
+                    False,
+                    [str(test_file)],
+                    None,
+                    None,
+                )
 
     @pytest.mark.asyncio
     async def test_delete_emails(self, classic_handler):

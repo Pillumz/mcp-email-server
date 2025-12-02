@@ -97,47 +97,233 @@ class TestEmailClient:
             assert isinstance(result["date"], datetime)
             assert result["attachments"] == ["test.pdf"]
 
-    def test_build_search_criteria(self):
-        """Test building search criteria for IMAP."""
-        # Test with no criteria (should return ["ALL"])
+    def test_build_search_criteria_no_criteria(self):
+        """Test building search criteria with no parameters returns ALL."""
         criteria = EmailClient._build_search_criteria()
         assert criteria == ["ALL"]
 
-        # Test with before date
+    def test_build_search_criteria_none_values(self):
+        """Test that None values are ignored and don't appear in criteria."""
+        criteria = EmailClient._build_search_criteria(
+            before=None,
+            since=None,
+            subject=None,
+            body=None,
+            text=None,
+            from_address=None,
+            to_address=None,
+        )
+        assert criteria == ["ALL"]
+
+    def test_build_search_criteria_empty_strings(self):
+        """Test that empty strings are ignored and don't appear in criteria."""
+        criteria = EmailClient._build_search_criteria(
+            subject="",
+            body="",
+            text="",
+            from_address="",
+            to_address="",
+        )
+        assert criteria == ["ALL"]
+
+    def test_build_search_criteria_date_format_proper_case(self):
+        """
+        Test that date formatting uses proper case (e.g., 'Nov' not 'NOV').
+        This is the regression test for the bug where .upper() broke Yandex IMAP.
+        """
+        # Test November (the month mentioned in the bug report)
+        nov_date = datetime(2025, 11, 24, tzinfo=timezone.utc)
+        criteria = EmailClient._build_search_criteria(before=nov_date)
+        assert criteria == ["BEFORE", "24-Nov-2025"]
+        # Ensure it's NOT uppercase
+        assert "24-NOV-2025" not in criteria
+        assert "Nov" in criteria[1]
+
+        # Test the same for SINCE
+        criteria = EmailClient._build_search_criteria(since=nov_date)
+        assert criteria == ["SINCE", "24-Nov-2025"]
+        assert "24-NOV-2025" not in criteria
+        assert "Nov" in criteria[1]
+
+    def test_build_search_criteria_all_months_proper_case(self):
+        """Test that all month abbreviations use proper case, not uppercase."""
+        month_tests = [
+            (datetime(2025, 1, 15, tzinfo=timezone.utc), "Jan"),
+            (datetime(2025, 2, 15, tzinfo=timezone.utc), "Feb"),
+            (datetime(2025, 3, 15, tzinfo=timezone.utc), "Mar"),
+            (datetime(2025, 4, 15, tzinfo=timezone.utc), "Apr"),
+            (datetime(2025, 5, 15, tzinfo=timezone.utc), "May"),
+            (datetime(2025, 6, 15, tzinfo=timezone.utc), "Jun"),
+            (datetime(2025, 7, 15, tzinfo=timezone.utc), "Jul"),
+            (datetime(2025, 8, 15, tzinfo=timezone.utc), "Aug"),
+            (datetime(2025, 9, 15, tzinfo=timezone.utc), "Sep"),
+            (datetime(2025, 10, 15, tzinfo=timezone.utc), "Oct"),
+            (datetime(2025, 11, 15, tzinfo=timezone.utc), "Nov"),
+            (datetime(2025, 12, 15, tzinfo=timezone.utc), "Dec"),
+        ]
+
+        for test_date, expected_month in month_tests:
+            criteria = EmailClient._build_search_criteria(before=test_date)
+            date_string = criteria[1]
+            assert expected_month in date_string, f"Expected '{expected_month}' in date string '{date_string}'"
+            # Ensure it's not uppercase
+            assert expected_month.upper() != expected_month or date_string != date_string.upper()
+
+    def test_build_search_criteria_before_date(self):
+        """Test building search criteria with before date."""
         before_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
         criteria = EmailClient._build_search_criteria(before=before_date)
-        assert criteria == ["BEFORE", "01-JAN-2023"]
+        assert criteria == ["BEFORE", "01-Jan-2023"]
 
-        # Test with since date
+    def test_build_search_criteria_since_date(self):
+        """Test building search criteria with since date."""
         since_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
         criteria = EmailClient._build_search_criteria(since=since_date)
-        assert criteria == ["SINCE", "01-JAN-2023"]
+        assert criteria == ["SINCE", "01-Jan-2023"]
 
-        # Test with subject
-        criteria = EmailClient._build_search_criteria(subject="Test")
-        assert criteria == ["SUBJECT", "Test"]
+    def test_build_search_criteria_both_dates(self):
+        """Test building search criteria with both before and since dates."""
+        before_date = datetime(2023, 12, 31, tzinfo=timezone.utc)
+        since_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
+        criteria = EmailClient._build_search_criteria(before=before_date, since=since_date)
+        assert criteria == ["BEFORE", "31-Dec-2023", "SINCE", "01-Jan-2023"]
 
-        # Test with body
-        criteria = EmailClient._build_search_criteria(body="Test")
-        assert criteria == ["BODY", "Test"]
+    def test_build_search_criteria_subject(self):
+        """Test building search criteria with subject."""
+        criteria = EmailClient._build_search_criteria(subject="Test Subject")
+        assert criteria == ["SUBJECT", "Test Subject"]
 
-        # Test with text
-        criteria = EmailClient._build_search_criteria(text="Test")
-        assert criteria == ["TEXT", "Test"]
+    def test_build_search_criteria_subject_with_special_chars(self):
+        """Test building search criteria with subject containing special characters."""
+        criteria = EmailClient._build_search_criteria(subject="Re: Important [URGENT]")
+        assert criteria == ["SUBJECT", "Re: Important [URGENT]"]
 
-        # Test with from_address
+    def test_build_search_criteria_body(self):
+        """Test building search criteria with body."""
+        criteria = EmailClient._build_search_criteria(body="Test Body")
+        assert criteria == ["BODY", "Test Body"]
+
+    def test_build_search_criteria_text(self):
+        """Test building search criteria with text."""
+        criteria = EmailClient._build_search_criteria(text="Test Text")
+        assert criteria == ["TEXT", "Test Text"]
+
+    def test_build_search_criteria_from_address(self):
+        """Test building search criteria with from_address."""
         criteria = EmailClient._build_search_criteria(from_address="test@example.com")
         assert criteria == ["FROM", "test@example.com"]
 
-        # Test with to_address
-        criteria = EmailClient._build_search_criteria(to_address="test@example.com")
-        assert criteria == ["TO", "test@example.com"]
+    def test_build_search_criteria_to_address(self):
+        """Test building search criteria with to_address."""
+        criteria = EmailClient._build_search_criteria(to_address="recipient@example.com")
+        assert criteria == ["TO", "recipient@example.com"]
 
-        # Test with multiple criteria
+    def test_build_search_criteria_multiple_criteria(self):
+        """Test building search criteria with multiple parameters."""
         criteria = EmailClient._build_search_criteria(
-            subject="Test", from_address="test@example.com", since=datetime(2023, 1, 1, tzinfo=timezone.utc)
+            subject="Test",
+            from_address="sender@example.com",
+            since=datetime(2023, 1, 1, tzinfo=timezone.utc),
         )
-        assert criteria == ["SINCE", "01-JAN-2023", "SUBJECT", "Test", "FROM", "test@example.com"]
+        assert criteria == ["SINCE", "01-Jan-2023", "SUBJECT", "Test", "FROM", "sender@example.com"]
+
+    def test_build_search_criteria_all_parameters(self):
+        """Test building search criteria with all parameters provided."""
+        before_date = datetime(2023, 12, 31, tzinfo=timezone.utc)
+        since_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
+
+        criteria = EmailClient._build_search_criteria(
+            before=before_date,
+            since=since_date,
+            subject="Important",
+            body="meeting",
+            text="agenda",
+            from_address="boss@example.com",
+            to_address="team@example.com",
+        )
+
+        # Verify all parameters are included
+        assert "BEFORE" in criteria
+        assert "31-Dec-2023" in criteria
+        assert "SINCE" in criteria
+        assert "01-Jan-2023" in criteria
+        assert "SUBJECT" in criteria
+        assert "Important" in criteria
+        assert "BODY" in criteria
+        assert "meeting" in criteria
+        assert "TEXT" in criteria
+        assert "agenda" in criteria
+        assert "FROM" in criteria
+        assert "boss@example.com" in criteria
+        assert "TO" in criteria
+        assert "team@example.com" in criteria
+
+    def test_build_search_criteria_mixed_none_and_values(self):
+        """Test building search criteria with mix of None and actual values."""
+        criteria = EmailClient._build_search_criteria(
+            before=None,
+            since=datetime(2023, 6, 15, tzinfo=timezone.utc),
+            subject="Test",
+            body=None,
+            from_address="sender@example.com",
+            to_address=None,
+        )
+
+        # Only non-None values should appear
+        assert "SINCE" in criteria
+        assert "15-Jun-2023" in criteria
+        assert "SUBJECT" in criteria
+        assert "Test" in criteria
+        assert "FROM" in criteria
+        assert "sender@example.com" in criteria
+
+        # None values should not appear
+        assert "BEFORE" not in criteria
+        assert "BODY" not in criteria
+        assert "TO" not in criteria
+
+    def test_build_search_criteria_date_edge_cases(self):
+        """Test date formatting with edge cases like leap years and year boundaries."""
+        # Leap year date
+        leap_date = datetime(2024, 2, 29, tzinfo=timezone.utc)
+        criteria = EmailClient._build_search_criteria(before=leap_date)
+        assert criteria == ["BEFORE", "29-Feb-2024"]
+
+        # First day of year
+        first_day = datetime(2023, 1, 1, tzinfo=timezone.utc)
+        criteria = EmailClient._build_search_criteria(since=first_day)
+        assert criteria == ["SINCE", "01-Jan-2023"]
+
+        # Last day of year
+        last_day = datetime(2023, 12, 31, tzinfo=timezone.utc)
+        criteria = EmailClient._build_search_criteria(before=last_day)
+        assert criteria == ["BEFORE", "31-Dec-2023"]
+
+    def test_build_search_criteria_ordering(self):
+        """Test that search criteria maintains expected ordering."""
+        before_date = datetime(2023, 12, 31, tzinfo=timezone.utc)
+        since_date = datetime(2023, 1, 1, tzinfo=timezone.utc)
+
+        criteria = EmailClient._build_search_criteria(
+            before=before_date,
+            since=since_date,
+            subject="Test",
+            from_address="test@example.com",
+        )
+
+        # Based on the implementation, order should be:
+        # BEFORE, before_value, SINCE, since_value, SUBJECT, subject_value, FROM, from_value
+        expected = [
+            "BEFORE",
+            "31-Dec-2023",
+            "SINCE",
+            "01-Jan-2023",
+            "SUBJECT",
+            "Test",
+            "FROM",
+            "test@example.com",
+        ]
+        assert criteria == expected
 
     @pytest.mark.asyncio
     async def test_get_emails_stream(self, email_client):

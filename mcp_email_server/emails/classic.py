@@ -1,5 +1,6 @@
 import email.utils
 import mimetypes
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from email.header import Header
@@ -23,7 +24,18 @@ from mcp_email_server.emails.models import (
     EmailMetadata,
     EmailMetadataPageResponse,
 )
+from mcp_email_server.emails.yandex_links import YandexLinkCalculator, decode_imap_utf7, encode_imap_utf7
 from mcp_email_server.log import logger
+
+# Common Sent folder names across email providers
+SENT_FOLDER_NAMES = [
+    "Sent",
+    "INBOX.Sent",
+    "Sent Items",
+    "Sent Messages",
+    "[Gmail]/Sent Mail",
+    "INBOX/Sent",
+]
 
 
 class EmailClient:
@@ -35,6 +47,48 @@ class EmailClient:
 
         self.smtp_use_tls = self.email_server.use_ssl
         self.smtp_start_tls = self.email_server.start_ssl
+
+    async def list_folders(self) -> list[str]:
+        """List all available IMAP folders, with names decoded from UTF-7."""
+        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password)
+
+            result = await imap.list('""', '"*"')
+            if result.result != "OK" or not result.lines:
+                return ["INBOX"]
+
+            folders = []
+            for item in result.lines:
+                if isinstance(item, bytes):
+                    item = item.decode("utf-8", errors="replace")
+
+                # Parse folder name from LIST response
+                # Format: '(\\HasNoChildren) "/" "FolderName"'
+                if '"' in item:
+                    parts = item.split('"')
+                    if len(parts) >= 2:
+                        folder_name = parts[-2]
+                        # Skip invalid folder names
+                        if folder_name and folder_name != "|":
+                            # Decode IMAP UTF-7 to readable names
+                            decoded_name = decode_imap_utf7(folder_name)
+                            folders.append(decoded_name)
+
+            # Always include INBOX
+            if "INBOX" not in folders:
+                folders.insert(0, "INBOX")
+
+            logger.debug(f"Available folders: {folders}")
+            return folders
+
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.debug(f"Error during IMAP logout: {e}")
 
     def _parse_email_data(self, raw_email: bytes, email_id: str | None = None) -> dict[str, Any]:  # noqa: C901
         """Parse raw email data into a structured dictionary."""
@@ -104,6 +158,12 @@ class EmailClient:
         # TODO: Allow retrieving full email body
         if body and len(body) > 20000:
             body = body[:20000] + "...[TRUNCATED]"
+
+        # Extract threading headers
+        message_id = email_message.get("Message-ID", "")
+        in_reply_to = email_message.get("In-Reply-To", "")
+        references = email_message.get("References", "")
+
         return {
             "email_id": email_id or "",
             "subject": subject,
@@ -112,6 +172,9 @@ class EmailClient:
             "body": body,
             "date": date,
             "attachments": attachments,
+            "message_id": message_id,
+            "in_reply_to": in_reply_to,
+            "references": references,
         }
 
     @staticmethod
@@ -126,9 +189,9 @@ class EmailClient:
     ):
         search_criteria = []
         if before:
-            search_criteria.extend(["BEFORE", before.strftime("%d-%b-%Y").upper()])
+            search_criteria.extend(["BEFORE", before.strftime("%d-%b-%Y")])
         if since:
-            search_criteria.extend(["SINCE", since.strftime("%d-%b-%Y").upper()])
+            search_criteria.extend(["SINCE", since.strftime("%d-%b-%Y")])
         if subject:
             search_criteria.extend(["SUBJECT", subject])
         if body:
@@ -161,9 +224,11 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
 
-            # Login and select inbox
+            # Login and select folder
             await imap.login(self.email_server.user_name, self.email_server.password)
-            await imap.select(mailbox)
+            # Encode folder name to IMAP UTF-7 for non-ASCII folders
+            imap_folder = encode_imap_utf7(mailbox)
+            await imap.select(imap_folder)
             search_criteria = self._build_search_criteria(
                 before, since, subject, from_address=from_address, to_address=to_address
             )
@@ -196,13 +261,15 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
 
-            # Login and select inbox
+            # Login and select folder
             await imap.login(self.email_server.user_name, self.email_server.password)
             try:
                 await imap.id(name="mcp-email-server", version="1.0.0")
             except Exception as e:
                 logger.warning(f"IMAP ID command failed: {e!s}")
-            await imap.select(mailbox)
+            # Encode folder name to IMAP UTF-7 for non-ASCII folders
+            imap_folder = encode_imap_utf7(mailbox)
+            await imap.select(imap_folder)
 
             search_criteria = self._build_search_criteria(
                 before, since, subject, from_address=from_address, to_address=to_address
@@ -360,13 +427,15 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
 
-            # Login and select inbox
+            # Login and select folder
             await imap.login(self.email_server.user_name, self.email_server.password)
             try:
                 await imap.id(name="mcp-email-server", version="1.0.0")
             except Exception as e:
                 logger.warning(f"IMAP ID command failed: {e!s}")
-            await imap.select(mailbox)
+            # Encode folder name to IMAP UTF-7 for non-ASCII folders
+            imap_folder = encode_imap_utf7(mailbox)
+            await imap.select(imap_folder)
 
             # Fetch the specific email by UID
             data = await self._fetch_email_with_formats(imap, email_id)
@@ -528,6 +597,8 @@ class EmailClient:
         bcc: list[str] | None = None,
         html: bool = False,
         attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
     ):
         # Create message with or without attachments
         if attachments:
@@ -535,6 +606,16 @@ class EmailClient:
         else:
             content_type = "html" if html else "plain"
             msg = MIMEText(body, content_type, "utf-8")
+
+        # Generate a unique Message-ID for this email
+        domain = self.sender.split("@")[-1].rstrip(">") if "@" in self.sender else "localhost"
+        msg["Message-ID"] = f"<{uuid.uuid4()}@{domain}>"
+
+        # Add threading headers for replies
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
 
         # Handle subject with special characters
         if any(ord(c) > 127 for c in subject):
@@ -549,6 +630,9 @@ class EmailClient:
             msg["From"] = self.sender
 
         msg["To"] = ", ".join(recipients)
+
+        # Add Date header
+        msg["Date"] = email.utils.formatdate(localtime=True)
 
         # Add CC header if provided (visible to recipients)
         if cc:
@@ -574,6 +658,79 @@ class EmailClient:
 
             await smtp.send_message(msg, recipients=all_recipients)
 
+        return msg
+
+    async def _find_sent_folder(self, imap) -> str | None:
+        """Find the Sent folder name for this IMAP server."""
+        try:
+            _, folders_data = await imap.list()
+            if not folders_data:
+                return None
+
+            # Parse folder names from LIST response
+            available_folders = []
+            for item in folders_data:
+                if isinstance(item, bytes):
+                    item = item.decode("utf-8", errors="replace")
+                # Extract folder name from LIST response like '(\\HasNoChildren) "/" "Sent"'
+                if '"' in item:
+                    parts = item.split('"')
+                    if len(parts) >= 2:
+                        folder_name = parts[-2]
+                        available_folders.append(folder_name)
+
+            logger.debug(f"Available folders: {available_folders}")
+
+            # Try to find a matching Sent folder
+            for sent_name in SENT_FOLDER_NAMES:
+                for folder in available_folders:
+                    if folder.lower() == sent_name.lower() or folder.lower().endswith(sent_name.lower()):
+                        logger.info(f"Found Sent folder: {folder}")
+                        return folder
+
+            # Fallback: look for any folder containing "sent" (case-insensitive)
+            for folder in available_folders:
+                if "sent" in folder.lower():
+                    logger.info(f"Found Sent folder (fallback): {folder}")
+                    return folder
+
+            logger.warning("Could not find Sent folder")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error finding Sent folder: {e}")
+            return None
+
+    async def save_to_sent_folder(self, msg, imap_server: "EmailServer") -> bool:
+        """Save a message to the Sent folder via IMAP."""
+        imap = self.imap_class(imap_server.host, imap_server.port)
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(imap_server.user_name, imap_server.password)
+
+            sent_folder = await self._find_sent_folder(imap)
+            if not sent_folder:
+                logger.warning("Sent folder not found, message will not be saved")
+                return False
+
+            # Convert message to bytes
+            msg_bytes = msg.as_bytes()
+
+            # Append to Sent folder with \Seen flag
+            result = await imap.append(sent_folder, msg_bytes, flags=["\\Seen"])
+            logger.info(f"Saved message to Sent folder: {result}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save message to Sent folder: {e}")
+            return False
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.debug(f"Error during IMAP logout: {e}")
+
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         imap = self.imap_class(self.email_server.host, self.email_server.port)
@@ -584,7 +741,9 @@ class EmailClient:
             await imap._client_task
             await imap.wait_hello_from_server()
             await imap.login(self.email_server.user_name, self.email_server.password)
-            await imap.select(mailbox)
+            # Encode folder name to IMAP UTF-7 for non-ASCII folders
+            imap_folder = encode_imap_utf7(mailbox)
+            await imap.select(imap_folder)
 
             for email_id in email_ids:
                 try:
@@ -612,6 +771,10 @@ class ClassicEmailHandler(EmailHandler):
             email_settings.outgoing,
             sender=f"{email_settings.full_name} <{email_settings.email_address}>",
         )
+
+    async def list_folders(self) -> list[str]:
+        """List all available folders for this email account."""
+        return await self.incoming_client.list_folders()
 
     async def get_emails_metadata(
         self,
@@ -648,10 +811,25 @@ class ClassicEmailHandler(EmailHandler):
         emails = []
         failed_ids = []
 
+        # Initialize Yandex link calculator if configured
+        yandex_calculator = None
+        if self.email_settings.yandex_link and self.email_settings.yandex_link.enabled:
+            yandex_calculator = YandexLinkCalculator(self.email_settings)
+
         for email_id in email_ids:
             try:
                 email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
                 if email_data:
+                    # Calculate web_url for Yandex accounts
+                    web_url = None
+                    if yandex_calculator:
+                        try:
+                            web_url = await yandex_calculator.get_web_url(
+                                mailbox, int(email_id)
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to calculate web_url for {email_id}: {e}")
+
                     emails.append(
                         EmailBodyResponse(
                             email_id=email_data["email_id"],
@@ -661,6 +839,10 @@ class ClassicEmailHandler(EmailHandler):
                             date=email_data["date"],
                             body=email_data["body"],
                             attachments=email_data["attachments"],
+                            message_id=email_data.get("message_id", ""),
+                            in_reply_to=email_data.get("in_reply_to", ""),
+                            references=email_data.get("references", ""),
+                            web_url=web_url,
                         )
                     )
                 else:
@@ -685,8 +867,15 @@ class ClassicEmailHandler(EmailHandler):
         bcc: list[str] | None = None,
         html: bool = False,
         attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
     ) -> None:
-        await self.outgoing_client.send_email(recipients, subject, body, cc, bcc, html, attachments)
+        msg = await self.outgoing_client.send_email(
+            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+        )
+
+        # Save to Sent folder using incoming (IMAP) server settings
+        await self.outgoing_client.save_to_sent_folder(msg, self.email_settings.incoming)
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
@@ -707,3 +896,67 @@ class ClassicEmailHandler(EmailHandler):
             size=result["size"],
             saved_path=result["saved_path"],
         )
+
+    async def reply_to_email(
+        self,
+        email_id: str,
+        body: str,
+        reply_all: bool = False,
+        html: bool = False,
+        attachments: list[str] | None = None,
+    ) -> str:
+        """Reply to an email, properly setting threading headers."""
+        # Fetch the original email to get threading info
+        original = await self.incoming_client.get_email_body_by_id(email_id)
+        if not original:
+            raise ValueError(f"Original email with ID {email_id} not found")
+
+        # Build reply subject
+        original_subject = original.get("subject", "")
+        if original_subject.lower().startswith("re:"):
+            reply_subject = original_subject
+        else:
+            reply_subject = f"Re: {original_subject}"
+
+        # Build threading headers
+        original_message_id = original.get("message_id", "")
+        original_references = original.get("references", "")
+
+        # In-Reply-To is the Message-ID of the email we're replying to
+        in_reply_to = original_message_id
+
+        # References is the chain: original's References + original's Message-ID
+        if original_references and original_message_id:
+            references = f"{original_references} {original_message_id}"
+        elif original_message_id:
+            references = original_message_id
+        else:
+            references = ""
+
+        # Determine recipients
+        original_sender = original.get("from", "")
+        if reply_all:
+            # Reply to sender + all original recipients (excluding ourselves)
+            recipients = [original_sender]
+            original_to = original.get("to", [])
+            my_address = self.email_settings.email_address.lower()
+            for addr in original_to:
+                # Skip our own address
+                if my_address not in addr.lower():
+                    recipients.append(addr)
+        else:
+            # Reply only to sender
+            recipients = [original_sender]
+
+        # Send the reply
+        await self.send_email(
+            recipients=recipients,
+            subject=reply_subject,
+            body=body,
+            html=html,
+            attachments=attachments,
+            in_reply_to=in_reply_to,
+            references=references,
+        )
+
+        return f"Reply sent to {', '.join(recipients)}"

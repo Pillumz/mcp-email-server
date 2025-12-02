@@ -1,0 +1,18 @@
+services:
+  mcp-email-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-email-server
+    environment:
+      - MCP_EMAIL_SERVER_CONFIG_PATH=/app/config.toml
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - mcp-cache:/root/.mcp-email-server
+    ports:
+      - "127.0.0.1:8081:8000"
+    restart: unless-stopped
+    command: ["sse", "--host", "0.0.0.0", "--port", "8000"]
+
+volumes:
+  mcp-cache:

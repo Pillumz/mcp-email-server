@@ -34,6 +34,23 @@ class EmailServer(BaseModel):
         return self.model_copy(update={"password": "********"})
 
 
+class YandexLinkConfig(BaseModel):
+    """Configuration for Yandex Mail direct web links.
+
+    Requires a baseline message to calculate web_ids for other messages.
+    The baseline is a known mapping: (folder, uid) -> web_id at a specific date.
+    """
+    enabled: bool = False
+    baseline_folder: str = "INBOX"
+    baseline_uid: int
+    baseline_web_id: int
+    baseline_date: datetime.datetime
+    # URL prefix: "mail.yandex.ru" for personal, "mail.360.yandex.ru" for business
+    url_prefix: str = "mail.360.yandex.ru"
+    # Folder name -> Yandex numeric folder ID mapping
+    folder_ids: dict[str, int] = {"INBOX": 1}
+
+
 class AccountAttributes(BaseModel):
     model_config = ConfigDict(json_encoders={datetime.datetime: lambda v: v.isoformat()})
     account_name: str
@@ -75,6 +92,7 @@ class EmailSettings(AccountAttributes):
     email_address: str
     incoming: EmailServer
     outgoing: EmailServer
+    yandex_link: YandexLinkConfig | None = None
 
     @classmethod
     def init(
@@ -303,7 +321,7 @@ class Settings(BaseSettings):
         return (TomlConfigSettingsSource(settings_cls),)
 
     def _to_toml(self) -> str:
-        data = self.model_dump()
+        data = self.model_dump(exclude_none=True)
         return tomli_w.dumps(data)
 
     def store(self) -> None:

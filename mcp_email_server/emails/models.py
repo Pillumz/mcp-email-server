@@ -48,6 +48,10 @@ class EmailBodyResponse(BaseModel):
     date: datetime
     body: str
     attachments: list[str]
+    message_id: str = ""  # Message-ID header for threading
+    in_reply_to: str = ""  # In-Reply-To header (if this is a reply)
+    references: str = ""  # References header (thread chain)
+    web_url: str | None = None  # Direct link to web interface (Yandex Mail)
 
 
 class EmailContentBatchResponse(BaseModel):

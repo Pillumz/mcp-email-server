@@ -32,6 +32,16 @@ async def list_available_accounts() -> list[AccountAttributes]:
     return [account.masked() for account in settings.get_accounts()]
 
 
+@mcp.tool(
+    description="List all available folders for an email account. Use this to discover folder names before calling list_emails_metadata. Common folders: INBOX, Sent, Drafts, Spam, Trash."
+)
+async def list_folders(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+) -> list[str]:
+    handler = dispatch_handler(account_name)
+    return await handler.list_folders()
+
+
 @mcp.tool(description="Add a new email account configuration to the settings.")
 async def add_email_account(email: EmailSettings) -> str:
     settings = get_settings()
@@ -41,10 +51,14 @@ async def add_email_account(email: EmailSettings) -> str:
 
 
 @mcp.tool(
-    description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content."
+    description="List email metadata (email_id, subject, sender, recipients, date) without body content. Returns email_id for use with get_emails_content. Use list_folders to discover available folders."
 )
 async def list_emails_metadata(
     account_name: Annotated[str, Field(description="The name of the email account.")],
+    mailbox: Annotated[
+        str,
+        Field(default="INBOX", description="Mailbox/folder to list emails from. Use list_folders to see available folders."),
+    ] = "INBOX",
     page: Annotated[
         int,
         Field(default=1, description="The page number to retrieve (starting from 1)."),
@@ -68,7 +82,6 @@ async def list_emails_metadata(
         Literal["asc", "desc"],
         Field(default=None, description="Order emails by field. `asc` or `desc`."),
     ] = "desc",
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
 ) -> EmailMetadataPageResponse:
     handler = dispatch_handler(account_name)
 
@@ -86,7 +99,7 @@ async def list_emails_metadata(
 
 
 @mcp.tool(
-    description="Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
+    description="Get the full content (including body) of one or more emails by their email_id. Use list_emails_metadata first to get the email_id. Important: use the same mailbox as when listing metadata."
 )
 async def get_emails_content(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -96,14 +109,17 @@ async def get_emails_content(
             description="List of email_id to retrieve (obtained from list_emails_metadata). Can be a single email_id or multiple email_ids."
         ),
     ],
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to retrieve emails from.")] = "INBOX",
+    mailbox: Annotated[
+        str,
+        Field(default="INBOX", description="Mailbox/folder containing the emails. Must match the mailbox used in list_emails_metadata."),
+    ] = "INBOX",
 ) -> EmailContentBatchResponse:
     handler = dispatch_handler(account_name)
     return await handler.get_emails_content(email_ids, mailbox)
 
 
 @mcp.tool(
-    description="Send an email using the specified account. Recipient should be a list of email addresses. Optionally attach files by providing their absolute paths.",
+    description="Send an email using the specified account. Recipient should be a list of email addresses. Optionally attach files by providing their absolute paths. The email will be saved to the Sent folder.",
 )
 async def send_email(
     account_name: Annotated[str, Field(description="The name of the email account to send from.")],
@@ -179,3 +195,31 @@ async def download_attachment(
 
     handler = dispatch_handler(account_name)
     return await handler.download_attachment(email_id, attachment_name, save_path)
+
+
+@mcp.tool(
+    description="Reply to an existing email. This properly sets threading headers (In-Reply-To, References) so the reply appears in the same conversation thread. Use get_emails_content first to get the email_id of the email you want to reply to.",
+)
+async def reply_to_email(
+    account_name: Annotated[str, Field(description="The name of the email account to send from.")],
+    email_id: Annotated[str, Field(description="The email_id (IMAP UID) of the email to reply to. Get this from list_emails_metadata or get_emails_content.")],
+    body: Annotated[str, Field(description="The body of the reply email.")],
+    reply_all: Annotated[
+        bool,
+        Field(default=False, description="If True, reply to all recipients (sender + all original To/Cc). If False, reply only to the sender."),
+    ] = False,
+    html: Annotated[
+        bool,
+        Field(default=False, description="Whether to send the reply as HTML (True) or plain text (False)."),
+    ] = False,
+    attachments: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description="A list of absolute file paths to attach to the reply.",
+        ),
+    ] = None,
+) -> str:
+    handler = dispatch_handler(account_name)
+    result = await handler.reply_to_email(email_id, body, reply_all, html, attachments)
+    return result

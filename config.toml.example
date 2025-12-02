@@ -1,0 +1,30 @@
+[[emails]]
+account_name = "personal"
+description = "Personal email account"
+full_name = "Your Name"
+email_address = "user@example.com"
+
+[emails.incoming]
+user_name = "user@example.com"
+password = "your-app-password"
+host = "imap.example.com"
+port = 993
+use_ssl = true
+
+[emails.outgoing]
+user_name = "user@example.com"
+password = "your-app-password"
+host = "smtp.example.com"
+port = 465
+use_ssl = true
+start_ssl = false
+
+# Optional: Yandex link support (for Yandex mail only)
+# [emails.yandex_link]
+# enabled = true
+# baseline_folder = "INBOX"
+# baseline_uid = 12345
+# baseline_web_id = 123456789
+# baseline_date = 2025-01-01T00:00:00+00:00
+# url_prefix = "mail.360.yandex.ru"
+# folder_ids = { INBOX = 1, Spam = 2, Trash = 3, Sent = 4 }
