@@ -27,6 +27,7 @@ from mcp_email_server.emails.models import (
 )
 from mcp_email_server.emails.yandex_links import YandexLinkCalculator, decode_imap_utf7, encode_imap_utf7
 from mcp_email_server.log import logger
+from mcp_email_server import cache
 
 # Common Sent folder names across email providers
 SENT_FOLDER_NAMES = [
@@ -345,6 +346,121 @@ class EmailClient:
                     logger.error(f"Could not find header data in response for email ID: {email_id_str}")
             except Exception as e:
                 logger.error(f"Error fetching email metadata {email_id}: {e!s}")
+
+    async def get_uids_above_watermark(self, watermark: int, mailbox: str = "INBOX") -> list[int]:
+        """Get all UIDs above a certain watermark (for incremental sync).
+
+        Args:
+            watermark: Fetch UIDs greater than this value (0 means all)
+            mailbox: Folder to search
+
+        Returns:
+            List of UIDs above watermark, sorted ascending
+        """
+        async def _search_uids(imap):
+            if watermark == 0:
+                # First sync - get all UIDs
+                _, messages = await imap.uid_search("ALL")
+            else:
+                # Incremental sync - get UIDs above watermark
+                _, messages = await imap.uid_search(f"UID {watermark + 1}:*")
+
+            if not messages or not messages[0]:
+                return []
+
+            uids = []
+            for uid_bytes in messages[0].split():
+                try:
+                    uid = int(uid_bytes.decode("utf-8"))
+                    # Filter out UIDs <= watermark (IMAP may return boundary)
+                    if uid > watermark:
+                        uids.append(uid)
+                except ValueError:
+                    continue
+
+            return sorted(uids)
+
+        return await self._imap_manager.execute_with_retry(_search_uids, folder=mailbox)
+
+    async def fetch_metadata_for_uids(self, uids: list[int], mailbox: str = "INBOX") -> list[dict]:
+        """Fetch email metadata for specific UIDs.
+
+        Args:
+            uids: List of UIDs to fetch
+            mailbox: Folder to fetch from
+
+        Returns:
+            List of metadata dicts with uid, subject, sender, recipients, date
+        """
+        if not uids:
+            return []
+
+        async def _fetch_metadata(imap):
+            results = []
+
+            for uid in uids:
+                try:
+                    uid_str = str(uid)
+                    _, data = await imap.uid("fetch", uid_str, "BODY.PEEK[HEADER]")
+
+                    if not data:
+                        logger.error(f"Failed to fetch headers for UID {uid_str}")
+                        continue
+
+                    # Find the email headers in the response
+                    raw_headers = None
+                    if len(data) > 1 and isinstance(data[1], bytearray):
+                        raw_headers = bytes(data[1])
+                    else:
+                        for item in data:
+                            if isinstance(item, bytes | bytearray) and len(item) > 10:
+                                if isinstance(item, bytes) and b"FETCH" in item:
+                                    continue
+                                raw_headers = bytes(item) if isinstance(item, bytearray) else item
+                                break
+
+                    if raw_headers:
+                        parser = BytesParser(policy=default)
+                        email_message = parser.parsebytes(raw_headers)
+
+                        subject = email_message.get("Subject", "")
+                        sender = email_message.get("From", "")
+                        date_str = email_message.get("Date", "")
+
+                        # Extract recipients
+                        to_addresses = []
+                        to_header = email_message.get("To", "")
+                        if to_header:
+                            to_addresses = [addr.strip() for addr in to_header.split(",")]
+                        cc_header = email_message.get("Cc", "")
+                        if cc_header:
+                            to_addresses.extend([addr.strip() for addr in cc_header.split(",")])
+
+                        # Parse date
+                        try:
+                            date_tuple = email.utils.parsedate_tz(date_str)
+                            date = (
+                                datetime.fromtimestamp(email.utils.mktime_tz(date_tuple), tz=timezone.utc)
+                                if date_tuple
+                                else datetime.now(timezone.utc)
+                            )
+                        except Exception:
+                            date = datetime.now(timezone.utc)
+
+                        results.append({
+                            "uid": uid,
+                            "subject": subject,
+                            "sender": sender,
+                            "recipients": to_addresses,
+                            "date": date.isoformat(),
+                        })
+
+                except Exception as e:
+                    logger.error(f"Error fetching metadata for UID {uid}: {e}")
+
+            return results
+
+        return await self._imap_manager.execute_with_retry(_fetch_metadata, folder=mailbox)
 
     def _check_email_content(self, data: list) -> bool:
         """Check if the fetched data contains actual email content."""
@@ -772,14 +888,82 @@ class ClassicEmailHandler(EmailHandler):
         order: str = "desc",
         mailbox: str = "INBOX",
     ) -> EmailMetadataPageResponse:
-        emails = []
-        async for email_data in self.incoming_client.get_emails_metadata_stream(
-            page, page_size, before, since, subject, from_address, to_address, order, mailbox
-        ):
-            emails.append(EmailMetadata.from_email(email_data))
-        total = await self.incoming_client.get_email_count(
-            before, since, subject, from_address=from_address, to_address=to_address, mailbox=mailbox
+        # If filters are applied, fall back to IMAP-only (existing behavior)
+        has_filters = any([before, since, subject, from_address, to_address])
+
+        if has_filters:
+            # Use original IMAP-based approach for filtered queries
+            emails = []
+            async for email_data in self.incoming_client.get_emails_metadata_stream(
+                page, page_size, before, since, subject, from_address, to_address, order, mailbox
+            ):
+                emails.append(EmailMetadata.from_email(email_data))
+            total = await self.incoming_client.get_email_count(
+                before, since, subject, from_address=from_address, to_address=to_address, mailbox=mailbox
+            )
+            return EmailMetadataPageResponse(
+                page=page,
+                page_size=page_size,
+                before=before,
+                since=since,
+                subject=subject,
+                emails=emails,
+                total=total,
+            )
+
+        # Hybrid approach: cache + IMAP for new emails only
+        account = self.email_settings.account_name
+
+        # Ensure cache is initialized
+        cache.init_db()
+
+        # 1. Get watermark (highest cached UID)
+        watermark = cache.get_watermark(account, mailbox)
+        logger.debug(f"Watermark for {account}/{mailbox}: {watermark}")
+
+        # 2. Fetch new UIDs from IMAP (always fresh for new mail)
+        new_uids = await self.incoming_client.get_uids_above_watermark(watermark, mailbox)
+
+        if new_uids:
+            logger.info(f"Found {len(new_uids)} new emails above watermark {watermark}")
+
+            # 3. Fetch metadata for new emails
+            new_metadata = await self.incoming_client.fetch_metadata_for_uids(new_uids, mailbox)
+
+            # 4. Cache new metadata
+            if new_metadata:
+                cache.store_metadata(account, mailbox, new_metadata)
+
+            # 5. Update watermark to highest UID
+            max_uid = max(new_uids)
+            cache.set_watermark(account, mailbox, max_uid)
+            logger.debug(f"Updated watermark to {max_uid}")
+
+        # 6. Get requested page from cache
+        cached_metadata, total = cache.get_metadata_page(
+            account, mailbox, page, page_size, order
         )
+
+        # Convert cached dicts to EmailMetadata objects
+        emails = []
+        for meta in cached_metadata:
+            # Parse date string back to datetime
+            date = datetime.now(timezone.utc)
+            if meta.get("date"):
+                try:
+                    date = datetime.fromisoformat(meta["date"])
+                except Exception:
+                    pass
+
+            emails.append(EmailMetadata(
+                email_id=str(meta["uid"]),
+                subject=meta.get("subject") or "",
+                sender=meta.get("sender") or "",
+                recipients=meta.get("recipients") or [],
+                date=date,
+                attachments=[],  # Metadata doesn't include attachments
+            ))
+
         return EmailMetadataPageResponse(
             page=page,
             page_size=page_size,
@@ -791,9 +975,13 @@ class ClassicEmailHandler(EmailHandler):
         )
 
     async def get_emails_content(self, email_ids: list[str], mailbox: str = "INBOX") -> EmailContentBatchResponse:
-        """Batch retrieve email body content using single connection."""
+        """Batch retrieve email body content using cache-first approach with IMAP fallback."""
         emails = []
         failed_ids = []
+        account = self.email_settings.account_name
+
+        # Ensure cache is initialized
+        cache.init_db()
 
         # Use cached Yandex link calculator if configured (avoids repeated syncs)
         yandex_calculator = None
@@ -802,24 +990,103 @@ class ClassicEmailHandler(EmailHandler):
                 self._yandex_calculator = YandexLinkCalculator(self.email_settings)
             yandex_calculator = self._yandex_calculator
 
-        # Use batch fetch instead of individual calls - much faster!
-        email_data_list = await self.incoming_client.get_email_bodies_batch(email_ids, mailbox)
+        # Separate cached and uncached emails
+        cached_bodies = {}
+        uncached_ids = []
 
-        for email_id, email_data in zip(email_ids, email_data_list):
-            if email_data:
-                # Calculate web_url for Yandex accounts
+        for email_id in email_ids:
+            uid = int(email_id)
+            cached = cache.get_body(account, mailbox, uid)
+            if cached:
+                cached_bodies[email_id] = cached
+                logger.debug(f"Cache hit for body {account}/{mailbox}/{uid}")
+            else:
+                uncached_ids.append(email_id)
+
+        # Fetch uncached emails from IMAP
+        imap_results = {}
+        if uncached_ids:
+            logger.info(f"Fetching {len(uncached_ids)} uncached bodies from IMAP")
+            email_data_list = await self.incoming_client.get_email_bodies_batch(uncached_ids, mailbox)
+
+            for email_id, email_data in zip(uncached_ids, email_data_list):
+                imap_results[email_id] = email_data
+
+                # Cache successfully fetched bodies
+                if email_data:
+                    uid = int(email_id)
+                    cache.store_body(
+                        account, mailbox, uid,
+                        body_text=email_data.get("body"),
+                        body_html=None,  # We don't store HTML separately yet
+                        attachments=email_data.get("attachments", []),
+                    )
+                    # Also cache metadata if we have it
+                    cache.store_metadata(account, mailbox, [{
+                        "uid": uid,
+                        "subject": email_data.get("subject"),
+                        "sender": email_data.get("from"),
+                        "recipients": email_data.get("to", []),
+                        "date": email_data.get("date").isoformat() if email_data.get("date") else None,
+                    }])
+
+        # Build response for each requested email
+        for email_id in email_ids:
+            uid = int(email_id)
+
+            # Check if we have cached body
+            if email_id in cached_bodies:
+                cached = cached_bodies[email_id]
+
+                # Get metadata from cache
+                meta = cache.get_metadata_for_uid(account, mailbox, uid)
+
+                # Parse date
+                date = datetime.now(timezone.utc)
+                if meta and meta.get("date"):
+                    try:
+                        date = datetime.fromisoformat(meta["date"])
+                    except Exception:
+                        pass
+
+                # Calculate web_url
                 web_url = None
                 if yandex_calculator:
                     try:
-                        web_url = await yandex_calculator.get_web_url(
-                            mailbox, int(email_id)
-                        )
+                        web_url = yandex_calculator.get_web_url(mailbox, uid, date)
                     except Exception as e:
                         logger.warning(f"Failed to calculate web_url for {email_id}: {e}")
 
-                emails.append(
-                    EmailBodyResponse(
+                emails.append(EmailBodyResponse(
+                    email_id=email_id,
+                    status="ok",
+                    subject=meta.get("subject", "") if meta else "",
+                    sender=meta.get("sender", "") if meta else "",
+                    recipients=meta.get("recipients", []) if meta else [],
+                    date=date,
+                    body=cached.get("body_text", ""),
+                    attachments=cached.get("attachments", []),
+                    web_url=web_url,
+                ))
+
+            # Check IMAP results for uncached emails
+            elif email_id in imap_results:
+                email_data = imap_results[email_id]
+
+                if email_data:
+                    # Successfully fetched from IMAP
+                    web_url = None
+                    if yandex_calculator:
+                        try:
+                            web_url = yandex_calculator.get_web_url(
+                                mailbox, uid, email_data.get("date")
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to calculate web_url for {email_id}: {e}")
+
+                    emails.append(EmailBodyResponse(
                         email_id=email_data["email_id"],
+                        status="ok",
                         subject=email_data["subject"],
                         sender=email_data["from"],
                         recipients=email_data["to"],
@@ -830,15 +1097,29 @@ class ClassicEmailHandler(EmailHandler):
                         in_reply_to=email_data.get("in_reply_to", ""),
                         references=email_data.get("references", ""),
                         web_url=web_url,
-                    )
-                )
+                    ))
+                else:
+                    # Email not found on IMAP - deleted or moved
+                    logger.warning(f"Email {email_id} not found on server, returning not_found status")
+
+                    # Clean up cache for this email
+                    cache.delete_email(account, mailbox, uid)
+
+                    emails.append(EmailBodyResponse.not_found(
+                        email_id,
+                        message="Email no longer exists on server (deleted or moved)"
+                    ))
+                    failed_ids.append(email_id)
             else:
+                # Should not happen, but handle gracefully
+                logger.error(f"Email {email_id} not in cache or IMAP results")
+                emails.append(EmailBodyResponse.not_found(email_id))
                 failed_ids.append(email_id)
 
         return EmailContentBatchResponse(
             emails=emails,
             requested_count=len(email_ids),
-            retrieved_count=len(emails),
+            retrieved_count=len(email_ids) - len(failed_ids),
             failed_ids=failed_ids,
         )
 

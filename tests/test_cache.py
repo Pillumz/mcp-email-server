@@ -49,7 +49,7 @@ class TestCacheDatabase:
 
             # Check indexes exist
             cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_message_web_id'"
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_message_mid'"
             )
             assert cursor.fetchone() is not None
 
@@ -87,33 +87,33 @@ class TestCacheDatabase:
                 conn.close()
 
 
-class TestGetWebId:
-    """Test get_web_id function."""
+class TestGetMid:
+    """Test get_mid function."""
 
-    def test_get_web_id_not_found(self, temp_cache_db):
-        """Test get_web_id returns None when message not found."""
+    def test_get_mid_not_found(self, temp_cache_db):
+        """Test get_mid returns None when message not found."""
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
-            result = cache.get_web_id("test_account", "INBOX", 123)
+            result = cache.get_mid("test_account", "INBOX", 123)
             assert result is None
 
-    def test_get_web_id_found(self, temp_cache_db):
-        """Test get_web_id returns web_id when message found."""
+    def test_get_mid_found(self, temp_cache_db):
+        """Test get_mid returns mid when message found."""
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
             # Insert a message
             messages = [{
                 "folder": "INBOX",
                 "uid": 123,
                 "internal_date": datetime.now().isoformat(),
-                "web_id": 456,
+                "mid": 456,
             }]
             cache.bulk_insert_messages("test_account", messages)
 
             # Retrieve it
-            result = cache.get_web_id("test_account", "INBOX", 123)
+            result = cache.get_mid("test_account", "INBOX", 123)
             assert result == 456
 
-    def test_get_web_id_different_folders(self, temp_cache_db):
-        """Test get_web_id correctly distinguishes between folders."""
+    def test_get_mid_different_folders(self, temp_cache_db):
+        """Test get_mid correctly distinguishes between folders."""
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
             # Insert messages in different folders with same UID
             messages = [
@@ -121,41 +121,41 @@ class TestGetWebId:
                     "folder": "INBOX",
                     "uid": 123,
                     "internal_date": datetime.now().isoformat(),
-                    "web_id": 456,
+                    "mid": 456,
                 },
                 {
                     "folder": "Sent",
                     "uid": 123,
                     "internal_date": datetime.now().isoformat(),
-                    "web_id": 789,
+                    "mid": 789,
                 },
             ]
             cache.bulk_insert_messages("test_account", messages)
 
-            # Verify each returns correct web_id
-            assert cache.get_web_id("test_account", "INBOX", 123) == 456
-            assert cache.get_web_id("test_account", "Sent", 123) == 789
+            # Verify each returns correct mid
+            assert cache.get_mid("test_account", "INBOX", 123) == 456
+            assert cache.get_mid("test_account", "Sent", 123) == 789
 
-    def test_get_web_id_different_accounts(self, temp_cache_db):
-        """Test get_web_id correctly distinguishes between accounts."""
+    def test_get_mid_different_accounts(self, temp_cache_db):
+        """Test get_mid correctly distinguishes between accounts."""
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
             # Insert messages for different accounts
             cache.bulk_insert_messages("account1", [{
                 "folder": "INBOX",
                 "uid": 123,
                 "internal_date": datetime.now().isoformat(),
-                "web_id": 456,
+                "mid": 456,
             }])
             cache.bulk_insert_messages("account2", [{
                 "folder": "INBOX",
                 "uid": 123,
                 "internal_date": datetime.now().isoformat(),
-                "web_id": 789,
+                "mid": 789,
             }])
 
-            # Verify each returns correct web_id
-            assert cache.get_web_id("account1", "INBOX", 123) == 456
-            assert cache.get_web_id("account2", "INBOX", 123) == 789
+            # Verify each returns correct mid
+            assert cache.get_mid("account1", "INBOX", 123) == 456
+            assert cache.get_mid("account2", "INBOX", 123) == 789
 
 
 class TestBulkInsertMessages:
@@ -174,14 +174,14 @@ class TestBulkInsertMessages:
                 "folder": "INBOX",
                 "uid": 123,
                 "internal_date": "2025-01-01T00:00:00",
-                "web_id": 456,
+                "mid": 456,
             }]
             result = cache.bulk_insert_messages("test_account", messages)
             assert result == 1
 
             # Verify it was inserted
-            web_id = cache.get_web_id("test_account", "INBOX", 123)
-            assert web_id == 456
+            mid = cache.get_mid("test_account", "INBOX", 123)
+            assert mid == 456
 
     def test_bulk_insert_multiple_messages(self, temp_cache_db):
         """Test bulk_insert with multiple messages."""
@@ -191,7 +191,7 @@ class TestBulkInsertMessages:
                     "folder": "INBOX",
                     "uid": i,
                     "internal_date": f"2025-01-{i:02d}T00:00:00",
-                    "web_id": i * 100,
+                    "mid": i * 100,
                 }
                 for i in range(1, 11)
             ]
@@ -200,8 +200,8 @@ class TestBulkInsertMessages:
 
             # Verify all were inserted
             for i in range(1, 11):
-                web_id = cache.get_web_id("test_account", "INBOX", i)
-                assert web_id == i * 100
+                mid = cache.get_mid("test_account", "INBOX", i)
+                assert mid == i * 100
 
     def test_bulk_insert_replace_existing(self, temp_cache_db):
         """Test bulk_insert replaces existing messages."""
@@ -211,23 +211,23 @@ class TestBulkInsertMessages:
                 "folder": "INBOX",
                 "uid": 123,
                 "internal_date": "2025-01-01T00:00:00",
-                "web_id": 456,
+                "mid": 456,
             }]
             cache.bulk_insert_messages("test_account", messages)
 
-            # Replace with updated web_id
+            # Replace with updated mid
             updated_messages = [{
                 "folder": "INBOX",
                 "uid": 123,
                 "internal_date": "2025-01-01T00:00:00",
-                "web_id": 789,
+                "mid": 789,
             }]
             result = cache.bulk_insert_messages("test_account", updated_messages)
             assert result == 1
 
             # Verify it was updated
-            web_id = cache.get_web_id("test_account", "INBOX", 123)
-            assert web_id == 789
+            mid = cache.get_mid("test_account", "INBOX", 123)
+            assert mid == 789
 
 
 class TestSyncState:
@@ -239,27 +239,27 @@ class TestSyncState:
             result = cache.get_last_sync_date("test_account")
             assert result is None
 
-    def test_get_max_web_id_none(self, temp_cache_db):
-        """Test get_max_web_id returns None for new account."""
+    def test_get_max_mid_none(self, temp_cache_db):
+        """Test get_max_mid returns None for new account."""
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
-            result = cache.get_max_web_id("test_account")
+            result = cache.get_max_mid("test_account")
             assert result is None
 
     def test_update_and_get_sync_state(self, temp_cache_db):
         """Test updating and retrieving sync state."""
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
             last_date = datetime(2025, 1, 15, 12, 30, 0)
-            max_web_id = 12345
+            max_mid = 12345
 
             # Update sync state
-            cache.update_sync_state("test_account", last_date, max_web_id)
+            cache.update_sync_state("test_account", last_date, max_mid)
 
             # Verify retrieval
             retrieved_date = cache.get_last_sync_date("test_account")
             assert retrieved_date == last_date
 
-            retrieved_web_id = cache.get_max_web_id("test_account")
-            assert retrieved_web_id == max_web_id
+            retrieved_mid = cache.get_max_mid("test_account")
+            assert retrieved_mid == max_mid
 
     def test_update_sync_state_replace(self, temp_cache_db):
         """Test updating sync state replaces existing values."""
@@ -269,12 +269,12 @@ class TestSyncState:
 
             # Update with new state
             new_date = datetime(2025, 1, 15)
-            new_web_id = 200
-            cache.update_sync_state("test_account", new_date, new_web_id)
+            new_mid = 200
+            cache.update_sync_state("test_account", new_date, new_mid)
 
             # Verify new state
             assert cache.get_last_sync_date("test_account") == new_date
-            assert cache.get_max_web_id("test_account") == new_web_id
+            assert cache.get_max_mid("test_account") == new_mid
 
     def test_sync_state_different_accounts(self, temp_cache_db):
         """Test sync state is account-specific."""
@@ -284,8 +284,8 @@ class TestSyncState:
             cache.update_sync_state("account2", datetime(2025, 1, 15), 200)
 
             # Verify each account has correct state
-            assert cache.get_max_web_id("account1") == 100
-            assert cache.get_max_web_id("account2") == 200
+            assert cache.get_max_mid("account1") == 100
+            assert cache.get_max_mid("account2") == 200
 
 
 class TestGetAllCachedMessages:
@@ -306,19 +306,19 @@ class TestGetAllCachedMessages:
                     "folder": "INBOX",
                     "uid": 3,
                     "internal_date": "2025-01-15T00:00:00",
-                    "web_id": 300,
+                    "mid": 300,
                 },
                 {
                     "folder": "INBOX",
                     "uid": 1,
                     "internal_date": "2025-01-10T00:00:00",
-                    "web_id": 100,
+                    "mid": 100,
                 },
                 {
                     "folder": "INBOX",
                     "uid": 2,
                     "internal_date": "2025-01-12T00:00:00",
-                    "web_id": 200,
+                    "mid": 200,
                 },
             ]
             cache.bulk_insert_messages("test_account", messages)
@@ -338,13 +338,13 @@ class TestGetAllCachedMessages:
                 "folder": "INBOX",
                 "uid": 1,
                 "internal_date": "2025-01-01T00:00:00",
-                "web_id": 100,
+                "mid": 100,
             }])
             cache.bulk_insert_messages("account2", [{
                 "folder": "INBOX",
                 "uid": 2,
                 "internal_date": "2025-01-01T00:00:00",
-                "web_id": 200,
+                "mid": 200,
             }])
 
             # Verify each account gets only its messages
@@ -368,7 +368,7 @@ class TestPruneOldMessages:
                 "folder": "INBOX",
                 "uid": 1,
                 "internal_date": datetime.now().isoformat(),
-                "web_id": 100,
+                "mid": 100,
             }]
             cache.bulk_insert_messages("test_account", messages)
 
@@ -377,7 +377,7 @@ class TestPruneOldMessages:
             assert deleted == 0
 
             # Verify message still exists
-            assert cache.get_web_id("test_account", "INBOX", 1) == 100
+            assert cache.get_mid("test_account", "INBOX", 1) == 100
 
     def test_prune_old_messages_deletes_old(self, temp_cache_db):
         """Test prune_old_messages deletes messages older than cutoff."""
@@ -387,8 +387,8 @@ class TestPruneOldMessages:
             new_date = datetime.now().isoformat()
 
             messages = [
-                {"folder": "INBOX", "uid": 1, "internal_date": old_date, "web_id": 100},
-                {"folder": "INBOX", "uid": 2, "internal_date": new_date, "web_id": 200},
+                {"folder": "INBOX", "uid": 1, "internal_date": old_date, "mid": 100},
+                {"folder": "INBOX", "uid": 2, "internal_date": new_date, "mid": 200},
             ]
             cache.bulk_insert_messages("test_account", messages)
 
@@ -397,8 +397,8 @@ class TestPruneOldMessages:
             assert deleted == 1
 
             # Verify old message deleted, new message remains
-            assert cache.get_web_id("test_account", "INBOX", 1) is None
-            assert cache.get_web_id("test_account", "INBOX", 2) == 200
+            assert cache.get_mid("test_account", "INBOX", 1) is None
+            assert cache.get_mid("test_account", "INBOX", 2) == 200
 
     def test_prune_old_messages_custom_days(self, temp_cache_db):
         """Test prune_old_messages with custom days parameter."""
@@ -411,7 +411,7 @@ class TestPruneOldMessages:
             ]
 
             messages = [
-                {"folder": "INBOX", "uid": i, "internal_date": date, "web_id": i * 100}
+                {"folder": "INBOX", "uid": i, "internal_date": date, "mid": i * 100}
                 for i, date in enumerate(dates, 1)
             ]
             cache.bulk_insert_messages("test_account", messages)
@@ -421,9 +421,9 @@ class TestPruneOldMessages:
             assert deleted == 1  # Only first message should be deleted
 
             # Verify
-            assert cache.get_web_id("test_account", "INBOX", 1) is None
-            assert cache.get_web_id("test_account", "INBOX", 2) == 200
-            assert cache.get_web_id("test_account", "INBOX", 3) == 300
+            assert cache.get_mid("test_account", "INBOX", 1) is None
+            assert cache.get_mid("test_account", "INBOX", 2) == 200
+            assert cache.get_mid("test_account", "INBOX", 3) == 300
 
 
 class TestClearAccountCache:
@@ -437,21 +437,21 @@ class TestClearAccountCache:
                 "folder": "INBOX",
                 "uid": 1,
                 "internal_date": datetime.now().isoformat(),
-                "web_id": 100,
+                "mid": 100,
             }])
             cache.bulk_insert_messages("account2", [{
                 "folder": "INBOX",
                 "uid": 2,
                 "internal_date": datetime.now().isoformat(),
-                "web_id": 200,
+                "mid": 200,
             }])
 
             # Clear account1
             cache.clear_account_cache("account1")
 
             # Verify account1 cleared, account2 remains
-            assert cache.get_web_id("account1", "INBOX", 1) is None
-            assert cache.get_web_id("account2", "INBOX", 2) == 200
+            assert cache.get_mid("account1", "INBOX", 1) is None
+            assert cache.get_mid("account2", "INBOX", 2) == 200
 
     def test_clear_account_cache_sync_state(self, temp_cache_db):
         """Test clear_account_cache removes sync state."""
@@ -464,7 +464,7 @@ class TestClearAccountCache:
 
             # Verify sync state cleared
             assert cache.get_last_sync_date("test_account") is None
-            assert cache.get_max_web_id("test_account") is None
+            assert cache.get_max_mid("test_account") is None
 
     def test_clear_account_cache_nonexistent(self, temp_cache_db):
         """Test clear_account_cache handles nonexistent account gracefully."""
@@ -489,11 +489,11 @@ class TestGetCacheStats:
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
             # Insert messages for multiple accounts
             cache.bulk_insert_messages("account1", [
-                {"folder": "INBOX", "uid": 1, "internal_date": datetime.now().isoformat(), "web_id": 100},
-                {"folder": "INBOX", "uid": 2, "internal_date": datetime.now().isoformat(), "web_id": 200},
+                {"folder": "INBOX", "uid": 1, "internal_date": datetime.now().isoformat(), "mid": 100},
+                {"folder": "INBOX", "uid": 2, "internal_date": datetime.now().isoformat(), "mid": 200},
             ])
             cache.bulk_insert_messages("account2", [
-                {"folder": "INBOX", "uid": 3, "internal_date": datetime.now().isoformat(), "web_id": 300},
+                {"folder": "INBOX", "uid": 3, "internal_date": datetime.now().isoformat(), "mid": 300},
             ])
 
             stats = cache.get_cache_stats()
@@ -506,15 +506,15 @@ class TestGetCacheStats:
         with patch.object(cache, "CACHE_PATH", temp_cache_db):
             # Insert messages and sync state
             cache.bulk_insert_messages("test_account", [
-                {"folder": "INBOX", "uid": 1, "internal_date": datetime.now().isoformat(), "web_id": 100},
-                {"folder": "INBOX", "uid": 2, "internal_date": datetime.now().isoformat(), "web_id": 200},
+                {"folder": "INBOX", "uid": 1, "internal_date": datetime.now().isoformat(), "mid": 100},
+                {"folder": "INBOX", "uid": 2, "internal_date": datetime.now().isoformat(), "mid": 200},
             ])
             cache.update_sync_state("test_account", datetime.now(), 200)
 
             stats = cache.get_cache_stats("test_account")
             assert stats["account"] == "test_account"
             assert stats["message_count"] == 2
-            assert stats["max_web_id"] == 200
+            assert stats["max_mid"] == 200
             assert stats["last_sync"] is not None
 
     def test_get_cache_stats_account_no_sync_state(self, temp_cache_db):
@@ -525,12 +525,12 @@ class TestGetCacheStats:
                 "folder": "INBOX",
                 "uid": 1,
                 "internal_date": datetime.now().isoformat(),
-                "web_id": 100,
+                "mid": 100,
             }])
 
             stats = cache.get_cache_stats("test_account")
             assert stats["message_count"] == 1
-            assert stats["max_web_id"] is None
+            assert stats["max_mid"] is None
             assert stats["last_sync"] is None
 
 

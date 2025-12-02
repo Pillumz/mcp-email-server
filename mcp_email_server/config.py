@@ -37,17 +37,15 @@ class EmailServer(BaseModel):
 class YandexLinkConfig(BaseModel):
     """Configuration for Yandex Mail direct web links.
 
-    Requires a baseline message to calculate web_ids for other messages.
-    The baseline is a known mapping: (folder, uid) -> web_id at a specific date.
+    Uses Yandex Web API to fetch actual message IDs (mid) for accurate URLs.
+    Requires a cookies.txt file exported from browser with Yandex session.
     """
     enabled: bool = False
-    baseline_folder: str = "INBOX"
-    baseline_uid: int
-    baseline_web_id: int
-    baseline_date: datetime.datetime
+    # Path to cookies.txt file (Netscape format) exported from browser
+    cookies_file: str | None = None
     # URL prefix: "mail.yandex.ru" for personal, "mail.360.yandex.ru" for business
     url_prefix: str = "mail.360.yandex.ru"
-    # Folder name -> Yandex numeric folder ID mapping
+    # Folder name -> Yandex numeric folder ID mapping (IMAP name -> web fid)
     folder_ids: dict[str, int] = {"INBOX": 1}
 
 

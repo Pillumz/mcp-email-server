@@ -110,37 +110,42 @@ class TestClassicEmailHandler:
 
     @pytest.mark.asyncio
     async def test_get_emails_with_mailbox(self, classic_handler):
-        """Test get_emails method with custom mailbox."""
+        """Test get_emails method with custom mailbox (uses hybrid cache approach).
+
+        Without filters, the hybrid approach is used which calls:
+        - get_uids_above_watermark to find new messages
+        - fetch_metadata_for_uids to get metadata for those messages
+        """
         now = datetime.now(timezone.utc)
-        email_data = {
-            "email_id": "456",
+        email_metadata = {
+            "uid": 456,
             "subject": "Sent Mail Subject",
-            "from": "me@example.com",
-            "to": ["recipient@example.com"],
-            "date": now,
-            "attachments": [],
+            "sender": "me@example.com",
+            "recipients": ["recipient@example.com"],
+            "date": now.isoformat(),
         }
 
-        mock_stream = AsyncMock()
-        mock_stream.__aiter__.return_value = [email_data]
-        mock_count = AsyncMock(return_value=1)
+        # Mock the hybrid approach methods
+        mock_get_uids = AsyncMock(return_value=[456])
+        mock_fetch_metadata = AsyncMock(return_value=[email_metadata])
 
-        with patch.object(classic_handler.incoming_client, "get_emails_metadata_stream", return_value=mock_stream):
-            with patch.object(classic_handler.incoming_client, "get_email_count", mock_count):
-                result = await classic_handler.get_emails_metadata(
-                    page=1,
-                    page_size=10,
-                    mailbox="Sent",
-                )
+        with (
+            patch.object(classic_handler.incoming_client, "get_uids_above_watermark", mock_get_uids),
+            patch.object(classic_handler.incoming_client, "fetch_metadata_for_uids", mock_fetch_metadata),
+        ):
+            result = await classic_handler.get_emails_metadata(
+                page=1,
+                page_size=10,
+                mailbox="Sent",
+            )
 
-                assert isinstance(result, EmailMetadataPageResponse)
-                assert len(result.emails) == 1
+            assert isinstance(result, EmailMetadataPageResponse)
+            assert len(result.emails) == 1
+            assert result.emails[0].subject == "Sent Mail Subject"
 
-                # Verify mailbox parameter was passed correctly
-                classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
-                    1, 10, None, None, None, None, None, "desc", "Sent"
-                )
-                mock_count.assert_called_once_with(None, None, None, from_address=None, to_address=None, mailbox="Sent")
+            # Verify methods were called with correct mailbox
+            mock_get_uids.assert_called_once_with(0, "Sent")
+            mock_fetch_metadata.assert_called_once_with([456], "Sent")
 
     @pytest.mark.asyncio
     async def test_send_email(self, classic_handler):

@@ -1,21 +1,24 @@
 """Yandex Mail web link calculator.
 
-Calculates direct web URLs for Yandex Mail messages by tracking
-message positions across all folders.
+Calculates direct web URLs for Yandex Mail messages using MID (message ID).
+MID structure: high12 digits (timestamp-based) + low6 digits (global sequence).
 """
 
 from __future__ import annotations
 
-import codecs
-import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-import aioimaplib
-
 from mcp_email_server import cache
-from mcp_email_server.emails.imap_connection import IMAPConnectionManager
 from mcp_email_server.log import logger
+
+if TYPE_CHECKING:
+    from mcp_email_server.config import EmailSettings, YandexLinkConfig
+
+# MID formula constants (derived from analysis)
+# high12 = MID_BASE + (unix_timestamp * MID_FACTOR)
+MID_BASE = 134694013349
+MID_FACTOR = 32.1354
 
 
 def decode_imap_utf7(s: str) -> str:
@@ -27,27 +30,20 @@ def decode_imap_utf7(s: str) -> str:
     if "&" not in s:
         return s
 
-    # Convert IMAP modified UTF-7 to standard UTF-7
-    # Replace &- with & (literal ampersand)
-    # Replace & with + and , with / for base64 sections
     result = []
     i = 0
     while i < len(s):
         if s[i] == "&":
             if i + 1 < len(s) and s[i + 1] == "-":
-                # &- means literal &
                 result.append("&")
                 i += 2
             else:
-                # Find the closing -
                 j = s.find("-", i + 1)
                 if j == -1:
                     result.append(s[i:])
                     break
-                # Extract and convert the encoded part
                 encoded = s[i + 1:j].replace(",", "/")
                 try:
-                    # Convert to standard UTF-7 and decode
                     utf7_str = "+" + encoded + "-"
                     decoded = utf7_str.encode("ascii").decode("utf-7")
                     result.append(decoded)
@@ -62,12 +58,7 @@ def decode_imap_utf7(s: str) -> str:
 
 
 def encode_imap_utf7(s: str) -> str:
-    """Encode Unicode folder name to IMAP Modified UTF-7.
-
-    IMAP uses a modified UTF-7 encoding where + is replaced with &
-    and / is replaced with , in base64 sections.
-    """
-    # Check if encoding is needed (only ASCII printable chars don't need encoding)
+    """Encode Unicode folder name to IMAP Modified UTF-7."""
     if all(0x20 <= ord(c) <= 0x7e for c in s) and "&" not in s:
         return s
 
@@ -76,24 +67,18 @@ def encode_imap_utf7(s: str) -> str:
     while i < len(s):
         c = s[i]
         if c == "&":
-            # Literal ampersand becomes &-
             result.append("&-")
             i += 1
         elif 0x20 <= ord(c) <= 0x7e:
-            # ASCII printable - pass through
             result.append(c)
             i += 1
         else:
-            # Find run of non-ASCII characters
             j = i
             while j < len(s) and not (0x20 <= ord(s[j]) <= 0x7e):
                 j += 1
-            # Encode the run using UTF-7
             non_ascii = s[i:j]
             try:
                 utf7_encoded = non_ascii.encode("utf-7").decode("ascii")
-                # Convert from standard UTF-7 to IMAP modified UTF-7
-                # Remove leading + and trailing -
                 if utf7_encoded.startswith("+") and utf7_encoded.endswith("-"):
                     imap_encoded = "&" + utf7_encoded[1:-1].replace("/", ",") + "-"
                 else:
@@ -108,246 +93,171 @@ def encode_imap_utf7(s: str) -> str:
     return "".join(result)
 
 
-if TYPE_CHECKING:
-    from mcp_email_server.config import EmailSettings, YandexLinkConfig
+def calculate_high12(timestamp: datetime) -> int:
+    """Calculate the high 12 digits of MID from timestamp.
+
+    Args:
+        timestamp: Message timestamp (with timezone)
+
+    Returns:
+        High 12 digits of MID
+    """
+    unix_ts = timestamp.timestamp()
+    return int(MID_BASE + (unix_ts * MID_FACTOR))
+
+
+def estimate_mid(timestamp: datetime, folder: str, uid: int, account: str) -> int:
+    """Estimate MID from timestamp and per-folder reference.
+
+    Args:
+        timestamp: Message timestamp
+        folder: IMAP folder name
+        uid: IMAP UID
+        account: Account name
+
+    Returns:
+        Estimated MID
+    """
+    # High 12 digits from timestamp (always accurate)
+    high12 = calculate_high12(timestamp)
+
+    # Low 6 digits from per-folder reference (approximate)
+    ref = cache.get_folder_reference(account, folder)
+    if ref:
+        ref_uid, ref_mid = ref
+        ref_low6 = ref_mid % 1_000_000
+        # Estimate: low6 changes by uid difference
+        estimated_low6 = ref_low6 + (uid - ref_uid)
+        # Clamp to valid range
+        estimated_low6 = max(0, min(999999, estimated_low6))
+    else:
+        # No reference - use a default based on uid
+        # This will likely be wrong but better than nothing
+        estimated_low6 = uid % 1_000_000
+
+    return high12 * 1_000_000 + estimated_low6
 
 
 class YandexLinkCalculator:
     """Calculate Yandex Mail web URLs for messages.
 
-    Web IDs in Yandex Mail are sequential across all folders.
-    This calculator tracks message positions and calculates web_ids
-    based on a known baseline.
+    Uses a hybrid approach:
+    1. Check cache for exact MID
+    2. If not found, estimate MID using timestamp + per-folder offset
+    3. Optionally sync from Web API when cookies are available
     """
 
-    def __init__(
-        self,
-        email_settings: "EmailSettings",
-        imap_manager: IMAPConnectionManager | None = None,
-    ):
+    def __init__(self, email_settings: "EmailSettings"):
         self.email_settings = email_settings
-        self.baseline: "YandexLinkConfig" = email_settings.yandex_link  # type: ignore
+        self.config: "YandexLinkConfig" = email_settings.yandex_link  # type: ignore
         self.account = email_settings.account_name
-        self._synced = False  # Track if we've already synced in this session
-
-        # Use provided connection manager or create our own
-        if imap_manager is not None:
-            self._imap_manager = imap_manager
-            self._owns_manager = False
-        else:
-            self._imap_manager = IMAPConnectionManager(email_settings.incoming)
-            self._owns_manager = True
 
         # Ensure cache is initialized
         cache.init_db()
 
-    async def close(self) -> None:
-        """Close connection if we own it."""
-        if self._owns_manager:
-            await self._imap_manager.close()
-
-    async def get_web_url(self, folder: str, uid: int) -> str:
+    def get_web_url(self, folder: str, uid: int, timestamp: datetime | None = None) -> str:
         """Get web URL for a message.
 
         Args:
             folder: IMAP folder name
             uid: IMAP UID
+            timestamp: Optional message timestamp (for estimation)
 
         Returns:
-            Direct URL to the message in Yandex Mail web interface
+            Direct URL to the message/thread in Yandex Mail web interface
         """
-        # 1. Check cache
-        cached_web_id = cache.get_web_id(self.account, folder, uid)
-        if cached_web_id:
-            logger.debug(f"Cache hit for {self.account}/{folder}/{uid}: {cached_web_id}")
-            return self._format_url(cached_web_id, folder)
-
-        # 2. Cache miss - sync only once per session to avoid repeated slow syncs
-        if not self._synced:
-            logger.info(f"Cache miss for {self.account}/{folder}/{uid}, syncing...")
-            await self._sync_messages()
-            self._synced = True
-
-            # 3. Lookup again (should exist now)
-            web_id = cache.get_web_id(self.account, folder, uid)
-            if web_id:
-                return self._format_url(web_id, folder)
-
-        # 4. If still not found, the message might be older than baseline
-        # Fall back to baseline URL (user can navigate from there)
-        logger.warning(f"Could not calculate web_id for {folder}/{uid}, using baseline")
-        return self._format_url(self.baseline.baseline_web_id, self.baseline.baseline_folder)
-
-    async def _sync_messages(self) -> None:
-        """Fetch messages from all folders and update cache."""
-        # Get last sync state
-        last_sync = cache.get_last_sync_date(self.account)
-        max_web_id = cache.get_max_web_id(self.account)
-
-        # Determine start date for sync
-        if last_sync and max_web_id:
-            since_date = last_sync
-            start_web_id = max_web_id
-        else:
-            # First sync - start from baseline
-            since_date = self.baseline.baseline_date
-            start_web_id = self.baseline.baseline_web_id
-
-            # Also need to cache the baseline message itself
-            cache.bulk_insert_messages(self.account, [{
-                "folder": self.baseline.baseline_folder,
-                "uid": self.baseline.baseline_uid,
-                "internal_date": self.baseline.baseline_date.isoformat(),
-                "web_id": self.baseline.baseline_web_id,
-            }])
-
-        logger.info(f"Syncing messages for {self.account} since {since_date}")
-
-        # Use connection manager
-        imap = await self._imap_manager.ensure_connected()
-
-        # Get all folders
-        folders = await self._get_all_folders(imap)
-        logger.info(f"Found {len(folders)} folders")
-
-        # Fetch messages from all folders
-        all_messages = []
-        for folder in folders:
-            messages = await self._fetch_folder_messages(imap, folder, since_date)
-            all_messages.extend(messages)
-
-        if not all_messages:
-            logger.info("No new messages to sync")
-            return
-
-        # Sort by date
-        all_messages.sort(key=lambda m: m["internal_date"])
-
-        # Find baseline position in sorted list
-        baseline_key = (self.baseline.baseline_folder, self.baseline.baseline_uid)
-        baseline_pos = None
-        for i, msg in enumerate(all_messages):
-            msg_key = (msg["folder"], msg["uid"])
-            if msg_key == baseline_key:
-                baseline_pos = i
-                break
-
-        # Assign web_ids relative to baseline position
-        # web_id = baseline_web_id + (position - baseline_position)
-        if baseline_pos is not None:
-            for i, msg in enumerate(all_messages):
-                msg["web_id"] = self.baseline.baseline_web_id + (i - baseline_pos)
-        else:
-            # Baseline not in list - use start_web_id for incremental sync
-            current_web_id = start_web_id
-            for msg in all_messages:
-                current_web_id += 1
-                msg["web_id"] = current_web_id
-
-        # Bulk insert to cache
-        cache.bulk_insert_messages(self.account, all_messages)
-
-        # Update sync state
-        if all_messages:
-            newest_date = datetime.fromisoformat(all_messages[-1]["internal_date"])
-            newest_web_id = all_messages[-1]["web_id"]
-            cache.update_sync_state(self.account, newest_date, newest_web_id)
-            logger.info(f"Synced {len(all_messages)} messages, max_web_id={newest_web_id}")
-
-    async def _get_all_folders(self, imap) -> list[str]:
-        """Get list of all IMAP folders."""
-        result = await imap.list('""', '"*"')
-        if result.result != "OK" or not result.lines:
-            return ["INBOX"]
-
-        folders = []
-        for item in result.lines:
-            if isinstance(item, bytes):
-                item = item.decode("utf-8", errors="replace")
-
-            # Parse folder name from LIST response
-            # Format: '(\\HasNoChildren) "/" "FolderName"'
-            if '"' in item:
-                parts = item.split('"')
-                if len(parts) >= 2:
-                    folder_name = parts[-2]
-                    # Skip invalid folder names
-                    if folder_name and folder_name != "|":
-                        folders.append(folder_name)
-
-        # Always include INBOX as it's a special folder
-        if "INBOX" not in folders:
-            folders.insert(0, "INBOX")
-
-        logger.debug(f"Folders: {folders}")
-        return folders
-
-    async def _fetch_folder_messages(
-        self, imap, folder: str, since_date: datetime
-    ) -> list[dict]:
-        """Fetch messages from a folder since a given date."""
-        messages = []
-
-        try:
-            result = await imap.select(folder)
-            if result.result != "OK":
-                logger.debug(f"Could not select folder {folder}")
-                return []
-
-            # Search for messages since date (use proper case, not uppercase)
-            date_str = since_date.strftime("%d-%b-%Y")
-            result = await imap.uid_search("SINCE", date_str)
-            data = result.lines
-
-            if not data or not data[0]:
-                return []
-
-            uids = data[0].split()
-            logger.debug(f"Folder {folder}: {len(uids)} messages since {date_str}")
-
-            # Fetch internal dates for all UIDs
-            for uid_bytes in uids:
-                uid_str = uid_bytes.decode() if isinstance(uid_bytes, bytes) else str(uid_bytes)
-
-                try:
-                    fetch_result = await imap.uid("fetch", uid_str, "(INTERNALDATE)")
-
-                    if fetch_result.result != "OK" or not fetch_result.lines:
-                        continue
-
-                    # Parse INTERNALDATE from response
-                    for item in fetch_result.lines:
-                        if isinstance(item, bytes):
-                            item = item.decode("utf-8", errors="replace")
-
-                        if "INTERNALDATE" in str(item):
-                            date_match = re.search(r'INTERNALDATE "([^"]+)"', str(item))
-                            if date_match:
-                                date_str_raw = date_match.group(1)
-                                try:
-                                    dt = datetime.strptime(
-                                        date_str_raw, "%d-%b-%Y %H:%M:%S %z"
-                                    )
-                                    messages.append({
-                                        "folder": decode_imap_utf7(folder),
-                                        "uid": int(uid_str),
-                                        "internal_date": dt.isoformat(),
-                                    })
-                                except ValueError as e:
-                                    logger.debug(f"Date parse error: {e}")
-                            break
-
-                except Exception as e:
-                    logger.debug(f"Error fetching UID {uid_str} in {folder}: {e}")
-
-        except Exception as e:
-            logger.debug(f"Error processing folder {folder}: {e}")
-
-        return messages
-
-    def _format_url(self, web_id: int, folder: str) -> str:
-        """Format web_id as Yandex Mail URL with folder."""
-        # Decode IMAP UTF-7 folder name to match config keys
+        # Decode IMAP UTF-7 folder name
         decoded_folder = decode_imap_utf7(folder)
-        folder_id = self.baseline.folder_ids.get(decoded_folder, 1)  # Default to 1 (INBOX)
-        return f"https://{self.baseline.url_prefix}/touch/folder/{folder_id}/thread/{web_id}"
+
+        # 1. Check cache for exact MID and TID
+        cached_ids = cache.get_message_ids(self.account, decoded_folder, uid)
+        if cached_ids:
+            mid, tid = cached_ids
+            logger.debug(f"Cache hit for {self.account}/{decoded_folder}/{uid}: mid={mid}, tid={tid}")
+            return self._format_url(tid, decoded_folder)
+
+        # 2. Estimate MID if timestamp provided (tid = mid for estimated)
+        if timestamp:
+            mid = estimate_mid(timestamp, decoded_folder, uid, self.account)
+            logger.debug(f"Estimated MID for {decoded_folder}/{uid}: {mid}")
+            return self._format_url(mid, decoded_folder)
+
+        # 3. Try to get reference and estimate without timestamp
+        ref = cache.get_folder_reference(self.account, decoded_folder)
+        if ref:
+            ref_uid, ref_mid = ref
+            # Simple linear estimate
+            mid = ref_mid + (uid - ref_uid)
+            logger.debug(f"Reference-based MID for {decoded_folder}/{uid}: {mid}")
+            return self._format_url(mid, decoded_folder)
+
+        # 4. Fallback: return URL to folder (user can find message)
+        logger.warning(f"Could not calculate MID for {decoded_folder}/{uid}, returning folder URL")
+        folder_id = self.config.folder_ids.get(decoded_folder, 1)
+        return f"https://{self.config.url_prefix}/touch/folder/{folder_id}"
+
+    async def sync_from_web_api(
+        self,
+        imap_messages_by_folder: dict[str, list[dict]],
+        count_per_folder: int = 50,
+    ) -> int:
+        """Sync MIDs from Yandex Web API.
+
+        Args:
+            imap_messages_by_folder: Dict mapping folder -> list of message dicts
+                                     Each dict needs: uid, subject, date
+            count_per_folder: Number of messages to fetch per folder
+
+        Returns:
+            Number of MIDs synced
+        """
+        if not self.config.cookies_file:
+            logger.warning("No cookies file configured, cannot sync from Web API")
+            return 0
+
+        from mcp_email_server.emails.yandex_web_api import YandexWebAPI
+
+        api = YandexWebAPI(self.config)
+        try:
+            synced = await api.sync_mids_to_cache(
+                account=self.account,
+                imap_messages_by_folder=imap_messages_by_folder,
+                count_per_folder=count_per_folder,
+            )
+            logger.info(f"Synced {synced} MIDs from Web API for {self.account}")
+            return synced
+        finally:
+            await api.close()
+
+    def _format_url(self, tid: int, folder: str) -> str:
+        """Format TID as Yandex Mail thread URL.
+
+        Args:
+            tid: Thread ID (or MID for single messages)
+            folder: Folder name (for folder_id lookup)
+
+        Returns:
+            Full URL to thread/message
+        """
+        folder_id = self.config.folder_ids.get(folder, 1)
+        return f"https://{self.config.url_prefix}/touch/folder/{folder_id}/thread/{tid}"
+
+    def set_reference(self, folder: str, uid: int, mid: int) -> None:
+        """Manually set a reference point for a folder.
+
+        Args:
+            folder: IMAP folder name
+            uid: Known IMAP UID
+            mid: Known MID for that UID
+        """
+        decoded_folder = decode_imap_utf7(folder)
+        cache.set_folder_reference(self.account, decoded_folder, uid, mid)
+        logger.info(f"Set reference for {self.account}/{decoded_folder}: uid={uid}, mid={mid}")
+
+    def get_all_references(self) -> dict[str, tuple[int, int]]:
+        """Get all folder references for this account.
+
+        Returns:
+            Dict mapping folder -> (ref_uid, ref_mid)
+        """
+        return cache.get_all_folder_references(self.account)

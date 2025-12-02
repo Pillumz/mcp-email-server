@@ -143,3 +143,6 @@ tests/config.toml
 local/
 config.toml
 coverage.json
+
+# Yandex auth cookies (sensitive)
+yandex_cookies*.txt

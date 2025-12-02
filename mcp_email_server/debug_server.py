@@ -47,18 +47,19 @@ def get_cached_info(email_settings, folder: str, uid: int) -> tuple[str | None, 
     conn = cache._get_connection()
     try:
         cursor = conn.execute(
-            "SELECT web_id, internal_date FROM message_index WHERE account = ? AND folder = ? AND uid = ?",
+            "SELECT mid, tid, internal_date FROM message_index WHERE account = ? AND folder = ? AND uid = ?",
             (account, folder, uid)
         )
         row = cursor.fetchone()
         if row:
-            web_id = row["web_id"]
+            mid = row["mid"]
+            tid = row["tid"] if row["tid"] else mid  # Fallback to mid if tid is NULL
             internal_date = datetime.fromisoformat(row["internal_date"]) if row["internal_date"] else None
 
-            # Format URL
+            # Format URL using TID (thread ID)
             decoded_folder = decode_imap_utf7(folder)
             folder_id = email_settings.yandex_link.folder_ids.get(decoded_folder, 1)
-            web_url = f"https://{email_settings.yandex_link.url_prefix}/touch/folder/{folder_id}/thread/{web_id}"
+            web_url = f"https://{email_settings.yandex_link.url_prefix}/touch/folder/{folder_id}/thread/{tid}"
 
             return web_url, internal_date
     finally:
@@ -277,6 +278,91 @@ def get_cache_info() -> str:
         return f"Error: {e}"
 
 
+async def sync_from_web_api_async(account_name: str) -> str:
+    """Sync MIDs from Yandex Web API for the specified account."""
+    settings = get_settings()
+
+    # Find the account
+    email_settings = None
+    for acc in settings.emails:
+        if acc.account_name == account_name:
+            email_settings = acc
+            break
+
+    if not email_settings:
+        return f"Error: Account '{account_name}' not found"
+
+    if not email_settings.yandex_link or not email_settings.yandex_link.enabled:
+        return "Error: Yandex link not enabled for this account"
+
+    if not email_settings.yandex_link.cookies_file:
+        return "Error: No cookies file configured. Set yandex_link.cookies_file in config."
+
+    handler = ClassicEmailHandler(email_settings)
+    calculator = YandexLinkCalculator(email_settings)
+
+    # Get all folders
+    folders = await handler.list_folders()
+    logger.info(f"Syncing from folders: {folders}")
+
+    # Gather IMAP messages by folder
+    imap_messages_by_folder: dict[str, list[dict]] = {}
+
+    for folder in folders:
+        try:
+            metadata = await handler.get_emails_metadata(
+                page=1,
+                page_size=50,
+                mailbox=folder,
+                order="desc"
+            )
+
+            if not metadata.emails:
+                continue
+
+            # Get full email data for matching
+            email_ids = [e.email_id for e in metadata.emails]
+            messages = []
+
+            for email_id in email_ids:
+                try:
+                    email_data = await handler.incoming_client.get_email_body_by_id(email_id, folder)
+                    if email_data:
+                        messages.append({
+                            "uid": int(email_id),
+                            "subject": email_data.get("subject", ""),
+                            "date": email_data.get("date"),
+                        })
+                except Exception as e:
+                    logger.warning(f"Error fetching email {email_id}: {e}")
+
+            if messages:
+                imap_messages_by_folder[folder] = messages
+
+        except Exception as e:
+            logger.warning(f"Error fetching from folder {folder}: {e}")
+
+    if not imap_messages_by_folder:
+        return "No IMAP messages found to sync"
+
+    # Sync from Web API
+    try:
+        synced = await calculator.sync_from_web_api(imap_messages_by_folder, count_per_folder=50)
+        return f"Successfully synced {synced} MIDs from Web API"
+    except Exception as e:
+        logger.exception("Error syncing from Web API")
+        return f"Error syncing: {e}"
+
+
+def sync_from_web_api(account_name: str) -> str:
+    """Sync wrapper for sync_from_web_api_async."""
+    try:
+        return asyncio.run(sync_from_web_api_async(account_name))
+    except Exception as e:
+        logger.exception("Error in sync")
+        return f"Error: {e}"
+
+
 def create_ui() -> gr.Blocks:
     """Create the Gradio UI."""
     accounts = get_available_accounts()
@@ -302,7 +388,14 @@ def create_ui() -> gr.Blocks:
                 label="Use MCP logic (sync & cache - slower but accurate)",
             )
 
-        fetch_btn = gr.Button("Fetch Messages", variant="primary")
+        with gr.Row():
+            fetch_btn = gr.Button("Fetch Messages", variant="primary")
+            sync_btn = gr.Button("Sync from Web API", variant="secondary")
+
+        sync_status = gr.Textbox(
+            label="Sync Status",
+            lines=1,
+        )
 
         cache_info = gr.Textbox(
             label="Cache Info",
@@ -330,6 +423,17 @@ def create_ui() -> gr.Blocks:
             fn=fetch_messages,
             inputs=[account_dropdown, count_input, use_mcp_checkbox],
             outputs=text_output,
+        )
+
+        def sync_and_update_cache(account_name: str) -> tuple[str, str]:
+            """Sync from Web API and return updated cache info."""
+            result = sync_from_web_api(account_name)
+            return result, get_cache_info()
+
+        sync_btn.click(
+            fn=sync_and_update_cache,
+            inputs=[account_dropdown],
+            outputs=[sync_status, cache_info],
         )
 
     return demo
