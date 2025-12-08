@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/mcp/email-mcp
-ExecStart=/opt/mcp/email-mcp/.venv/bin/python -m mcp_email_server streamable-http --host 127.0.0.1 --port 9082
+ExecStart=/opt/mcp/email-mcp/.venv/bin/mcp-email-server streamable-http --host 127.0.0.1 --port 9082
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
