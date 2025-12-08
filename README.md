@@ -1,4 +1,6 @@
-# mcp-email-server
+# email-mcp
+
+> **Fork Notice:** This is a fork of [ai-zerolab/mcp-email-server](https://github.com/ai-zerolab/mcp-email-server) with modifications for systemd deployment. See upstream for original documentation.
 
 [![Release](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)
 [![Build status](https://img.shields.io/github/actions/workflow/status/ai-zerolab/mcp-email-server/main.yml?branch=main)](https://github.com/ai-zerolab/mcp-email-server/actions/workflows/main.yml?query=branch%3Amain)
