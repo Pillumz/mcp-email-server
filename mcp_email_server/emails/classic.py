@@ -1144,7 +1144,14 @@ class ClassicEmailHandler(EmailHandler):
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
-        return await self.incoming_client.delete_emails(email_ids, mailbox)
+        deleted_ids, failed_ids = await self.incoming_client.delete_emails(email_ids, mailbox)
+
+        # Invalidate cache for deleted emails
+        account = self.email_settings.account_name
+        for uid in deleted_ids:
+            cache.delete_email(account, mailbox, int(uid))
+
+        return deleted_ids, failed_ids
 
     async def download_attachment(
         self,
