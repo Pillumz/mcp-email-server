@@ -262,3 +262,30 @@ This is the email body."""
             assert "recipient@example.com" in recipients
             assert "cc@example.com" in recipients
             assert "bcc@example.com" in recipients
+
+
+class TestParseEmailData:
+    def test_parse_email_extracts_message_id(self, email_client):
+        """Test that Message-ID header is extracted during parsing."""
+        raw_email = b"""Message-ID: <test123@example.com>
+From: sender@example.com
+To: recipient@example.com
+Subject: Test Subject
+Date: Mon, 1 Jan 2024 12:00:00 +0000
+
+Test body content
+"""
+        result = email_client._parse_email_data(raw_email, email_id="1")
+        assert result["message_id"] == "<test123@example.com>"
+
+    def test_parse_email_handles_missing_message_id(self, email_client):
+        """Test graceful handling when Message-ID is missing."""
+        raw_email = b"""From: sender@example.com
+To: recipient@example.com
+Subject: Test Subject
+Date: Mon, 1 Jan 2024 12:00:00 +0000
+
+Test body content
+"""
+        result = email_client._parse_email_data(raw_email, email_id="1")
+        assert result["message_id"] is None

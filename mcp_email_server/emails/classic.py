@@ -46,6 +46,9 @@ class EmailClient:
         sender = email_message.get("From", "")
         date_str = email_message.get("Date", "")
 
+        # Extract Message-ID for reply threading
+        message_id = email_message.get("Message-ID")
+
         # Extract recipients
         to_addresses = []
         to_header = email_message.get("To", "")
@@ -106,6 +109,7 @@ class EmailClient:
             body = body[:20000] + "...[TRUNCATED]"
         return {
             "email_id": email_id or "",
+            "message_id": message_id,
             "subject": subject,
             "from": sender,
             "to": to_addresses,
