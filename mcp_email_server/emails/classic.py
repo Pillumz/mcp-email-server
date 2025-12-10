@@ -532,6 +532,8 @@ class EmailClient:
         bcc: list[str] | None = None,
         html: bool = False,
         attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
     ):
         # Create message with or without attachments
         if attachments:
@@ -557,6 +559,12 @@ class EmailClient:
         # Add CC header if provided (visible to recipients)
         if cc:
             msg["Cc"] = ", ".join(cc)
+
+        # Set threading headers for replies
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
 
         # Note: BCC recipients are not added to headers (they remain hidden)
         # but will be included in the actual recipients for SMTP delivery
