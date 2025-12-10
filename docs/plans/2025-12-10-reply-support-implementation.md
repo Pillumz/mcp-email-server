@@ -48,6 +48,7 @@ git branch
 ## Task 1: Add message_id to Models
 
 **Files:**
+
 - Modify: `mcp_email_server/emails/models.py`
 - Test: `tests/test_models.py`
 
@@ -170,6 +171,7 @@ git commit -m "feat(models): add message_id field for reply threading"
 ## Task 2: Extract Message-ID During Email Parsing
 
 **Files:**
+
 - Modify: `mcp_email_server/emails/classic.py` (lines 39-115, `_parse_email_data` method)
 - Test: `tests/test_email_client.py`
 
@@ -257,6 +259,7 @@ git commit -m "feat(parsing): extract Message-ID header for reply threading"
 ## Task 3: Update send_email to Accept Reply Headers
 
 **Files:**
+
 - Modify: `mcp_email_server/emails/classic.py` (lines 522-575, `send_email` method)
 - Test: `tests/test_email_client.py`
 
@@ -387,6 +390,7 @@ git commit -m "feat(send): add in_reply_to and references parameters for threadi
 ## Task 4: Update ClassicEmailHandler to Pass Reply Headers
 
 **Files:**
+
 - Modify: `mcp_email_server/emails/classic.py` (lines 679-689, `ClassicEmailHandler.send_email`)
 - Test: `tests/test_classic_handler.py`
 
@@ -470,6 +474,7 @@ git commit -m "feat(handler): pass reply headers through ClassicEmailHandler"
 ## Task 5: Update MCP Tool send_email
 
 **Files:**
+
 - Modify: `mcp_email_server/app.py` (lines 105-137)
 - Test: `tests/test_mcp_tools.py`
 
@@ -586,6 +591,7 @@ git commit -m "feat(mcp): add in_reply_to and references params to send_email to
 ## Task 6: Update get_emails_content to Return message_id
 
 **Files:**
+
 - Modify: `mcp_email_server/emails/classic.py` (where EmailBodyResponse is constructed)
 - Test: `tests/test_mcp_tools.py`
 
@@ -672,13 +678,14 @@ git commit -m "feat(content): include message_id in EmailBodyResponse"
 ## Task 7: Update README Documentation
 
 **Files:**
+
 - Modify: `README.md`
 
 **Step 1: Add reply documentation**
 
 Add a new section to README.md after the main usage examples:
 
-```markdown
+````markdown
 ### Replying to Emails
 
 To reply to an email with proper threading (so it appears in the same conversation in email clients):
@@ -689,6 +696,7 @@ To reply to an email with proper threading (so it appears in the same conversati
 emails = await get_emails_content(account_name="work", email_ids=["123"])
 original = emails.emails[0]
 ```
+````
 
 2. Send your reply using `in_reply_to` and `references`:
 
@@ -704,14 +712,15 @@ await send_email(
 ```
 
 The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
-```
+
+````
 
 **Step 2: Commit**
 
 ```fish
 git add README.md
 git commit -m "docs: add reply/threading usage example"
-```
+````
 
 ---
 
@@ -781,14 +790,14 @@ EOF
 
 ## Summary
 
-| Task | Description | Files |
-|------|-------------|-------|
-| 0 | Repository setup | git config |
-| 1 | Add message_id to models | models.py, test_models.py |
-| 2 | Extract Message-ID during parsing | classic.py, test_email_client.py |
-| 3 | Add reply params to EmailClient.send_email | classic.py, test_email_client.py |
-| 4 | Pass reply params through ClassicEmailHandler | classic.py, test_classic_handler.py |
-| 5 | Add reply params to MCP send_email tool | app.py, test_mcp_tools.py |
-| 6 | Return message_id in get_emails_content | classic.py, test_mcp_tools.py |
-| 7 | Update README | README.md |
-| 8 | Final verification and PR | - |
+| Task | Description                                   | Files                               |
+| ---- | --------------------------------------------- | ----------------------------------- |
+| 0    | Repository setup                              | git config                          |
+| 1    | Add message_id to models                      | models.py, test_models.py           |
+| 2    | Extract Message-ID during parsing             | classic.py, test_email_client.py    |
+| 3    | Add reply params to EmailClient.send_email    | classic.py, test_email_client.py    |
+| 4    | Pass reply params through ClassicEmailHandler | classic.py, test_classic_handler.py |
+| 5    | Add reply params to MCP send_email tool       | app.py, test_mcp_tools.py           |
+| 6    | Return message_id in get_emails_content       | classic.py, test_mcp_tools.py       |
+| 7    | Update README                                 | README.md                           |
+| 8    | Final verification and PR                     | -                                   |

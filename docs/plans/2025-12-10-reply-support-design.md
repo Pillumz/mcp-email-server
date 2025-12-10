@@ -3,6 +3,7 @@
 ## Overview
 
 Add email reply/threading support to mcp-email-server by:
+
 1. Exposing `message_id` (RFC 5322 Message-ID) when reading emails
 2. Adding `in_reply_to` and `references` parameters to `send_email`
 
@@ -116,6 +117,7 @@ await send_email(
 ## Backward Compatibility
 
 All changes are additive:
+
 - New `message_id` field in responses (nullable)
 - New optional parameters in `send_email`
 - Existing API calls continue to work unchanged

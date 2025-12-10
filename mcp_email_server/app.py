@@ -146,8 +146,15 @@ async def send_email(
 ) -> str:
     handler = dispatch_handler(account_name)
     await handler.send_email(
-        recipients, subject, body, cc, bcc, html, attachments,
-        in_reply_to, references,
+        recipients,
+        subject,
+        body,
+        cc,
+        bcc,
+        html,
+        attachments,
+        in_reply_to,
+        references,
     )
     recipient_str = ", ".join(recipients)
     attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
