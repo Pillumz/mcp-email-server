@@ -380,6 +380,8 @@ class TestMcpTools:
                 ["bcc@example.com"],
                 False,
                 None,
+                None,  # in_reply_to
+                None,  # references
             )
 
     @pytest.mark.asyncio
@@ -480,3 +482,25 @@ class TestMcpTools:
                 mock_handler.download_attachment.assert_called_once_with(
                     "12345", "document.pdf", "/var/downloads/document.pdf"
                 )
+
+    @pytest.mark.asyncio
+    async def test_send_email_with_reply_headers(self):
+        """Test send_email MCP tool with reply headers."""
+        mock_handler = AsyncMock()
+        mock_handler.send_email = AsyncMock()
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await send_email(
+                account_name="test",
+                recipients=["recipient@example.com"],
+                subject="Re: Test",
+                body="Reply body",
+                in_reply_to="<original@example.com>",
+                references="<original@example.com>",
+            )
+
+            mock_handler.send_email.assert_called_once()
+            call_args = mock_handler.send_email.call_args
+            # Verify in_reply_to and references were passed (positions 7 and 8 after cc, bcc, html, attachments)
+            assert "<original@example.com>" in str(call_args)
+            assert "recipient@example.com" in result
