@@ -697,8 +697,12 @@ class ClassicEmailHandler(EmailHandler):
         bcc: list[str] | None = None,
         html: bool = False,
         attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
     ) -> None:
-        await self.outgoing_client.send_email(recipients, subject, body, cc, bcc, html, attachments)
+        await self.outgoing_client.send_email(
+            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+        )
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""

@@ -168,6 +168,8 @@ class TestClassicEmailHandler:
                 ["bcc@example.com"],
                 False,
                 None,
+                None,
+                None,
             )
 
     @pytest.mark.asyncio
@@ -199,6 +201,8 @@ class TestClassicEmailHandler:
                 None,
                 False,
                 [str(test_file)],
+                None,
+                None,
             )
 
     @pytest.mark.asyncio
@@ -276,3 +280,26 @@ class TestClassicEmailHandler:
             assert result.saved_path == save_path
 
             mock_download.assert_called_once_with("123", "document.pdf", save_path)
+
+    @pytest.mark.asyncio
+    async def test_send_email_with_reply_headers(self, classic_handler):
+        """Test sending email with reply headers."""
+        mock_smtp = AsyncMock()
+        mock_smtp.__aenter__.return_value = mock_smtp
+        mock_smtp.__aexit__.return_value = None
+        mock_smtp.login = AsyncMock()
+        mock_smtp.send_message = AsyncMock()
+
+        with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+            await classic_handler.send_email(
+                recipients=["recipient@example.com"],
+                subject="Re: Test",
+                body="Reply body",
+                in_reply_to="<original@example.com>",
+                references="<original@example.com>",
+            )
+
+            call_args = mock_smtp.send_message.call_args
+            msg = call_args[0][0]
+            assert msg["In-Reply-To"] == "<original@example.com>"
+            assert msg["References"] == "<original@example.com>"
