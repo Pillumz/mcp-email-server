@@ -8,6 +8,7 @@ class EmailMetadata(BaseModel):
     """Email metadata"""
 
     email_id: str
+    message_id: str | None = None  # RFC 5322 Message-ID header for reply threading
     subject: str
     sender: str
     recipients: list[str]  # Recipient list
@@ -18,6 +19,7 @@ class EmailMetadata(BaseModel):
     def from_email(cls, email: dict[str, Any]):
         return cls(
             email_id=email["email_id"],
+            message_id=email.get("message_id"),
             subject=email["subject"],
             sender=email["from"],
             recipients=email.get("to", []),
@@ -42,6 +44,7 @@ class EmailBodyResponse(BaseModel):
     """Single email body response"""
 
     email_id: str  # IMAP UID of this email
+    message_id: str | None = None  # RFC 5322 Message-ID header for reply threading
     subject: str
     sender: str
     recipients: list[str]

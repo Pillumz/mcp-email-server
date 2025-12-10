@@ -1,0 +1,58 @@
+[[emails]]
+account_name = "personal"
+description = "Personal Yandex account"
+full_name = "Kirill Udin"
+email_address = "kirill-udin@yandex.ru"
+
+[emails.incoming]
+user_name = "kirill-udin@yandex.ru"
+password = "vvbvkqigfetolrtz"
+host = "imap.yandex.ru"
+port = 993
+use_ssl = true
+
+[emails.outgoing]
+user_name = "kirill-udin@yandex.ru"
+password = "vvbvkqigfetolrtz"
+host = "smtp.yandex.ru"
+port = 465
+use_ssl = true
+start_ssl = false
+
+[emails.yandex_link]
+enabled = true
+baseline_folder = "INBOX"
+baseline_uid = 31372
+baseline_web_id = 191402984163304650
+baseline_date = 2025-11-25T07:25:24+00:00
+url_prefix = "mail.360.yandex.ru"
+folder_ids = { INBOX = 1, "Спам" = 2, "Удаленные" = 3, "Отправленные" = 4, "Архив" = 17 }
+
+[[emails]]
+account_name = "work"
+description = "CDM work account"
+full_name = "Kirill Yudin"
+email_address = "kirill.yudin@cdm.space"
+
+[emails.incoming]
+user_name = "kirill.yudin@cdm.space"
+password = "gutsxordgupwcfeq"
+host = "imap.yandex.ru"
+port = 993
+use_ssl = true
+
+[emails.outgoing]
+user_name = "kirill.yudin@cdm.space"
+password = "gutsxordgupwcfeq"
+host = "smtp.yandex.ru"
+port = 465
+use_ssl = true
+start_ssl = false
+
+[emails.yandex_link]
+enabled = true
+baseline_folder = "INBOX"
+baseline_uid = 12280
+baseline_web_id = 191402984163312194
+baseline_date = 2025-11-26T08:52:06+00:00
+folder_ids = { INBOX = 1, Spam = 2, Trash = 3, Sent = 4, "Контур.Фокус" = 22, "Трекер" = 24, "ЭДО 1С" = 25 }
