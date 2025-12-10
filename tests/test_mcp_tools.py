@@ -504,3 +504,37 @@ class TestMcpTools:
             # Verify in_reply_to and references were passed (positions 7 and 8 after cc, bcc, html, attachments)
             assert "<original@example.com>" in str(call_args)
             assert "recipient@example.com" in result
+
+    @pytest.mark.asyncio
+    async def test_get_emails_content_includes_message_id(self):
+        """Test that get_emails_content returns message_id."""
+        from datetime import datetime, timezone
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_content = AsyncMock(
+            return_value=EmailContentBatchResponse(
+                emails=[
+                    EmailBodyResponse(
+                        email_id="123",
+                        message_id="<test@example.com>",
+                        subject="Test",
+                        sender="sender@example.com",
+                        recipients=["recipient@example.com"],
+                        date=datetime.now(timezone.utc),
+                        body="Test body",
+                        attachments=[],
+                    )
+                ],
+                requested_count=1,
+                retrieved_count=1,
+                failed_ids=[],
+            )
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await get_emails_content(
+                account_name="test",
+                email_ids=["123"],
+            )
+
+            assert result.emails[0].message_id == "<test@example.com>"

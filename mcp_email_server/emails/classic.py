@@ -667,6 +667,7 @@ class ClassicEmailHandler(EmailHandler):
                     emails.append(
                         EmailBodyResponse(
                             email_id=email_data["email_id"],
+                            message_id=email_data.get("message_id"),
                             subject=email_data["subject"],
                             sender=email_data["from"],
                             recipients=email_data["to"],
