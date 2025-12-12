@@ -63,21 +63,23 @@ You can also configure the email server using environment variables, which is pa
 
 #### Available Environment Variables
 
-| Variable                                      | Description                | Default       | Required |
-| --------------------------------------------- | -------------------------- | ------------- | -------- |
-| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier         | `"default"`   | No       |
-| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name               | Email prefix  | No       |
-| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address              | -             | Yes      |
-| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username             | Same as email | No       |
-| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password             | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host           | -             | Yes      |
-| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port           | `993`         | No       |
-| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL            | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host           | -             | Yes      |
-| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port           | `465`         | No       |
-| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL            | `true`        | No       |
-| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS            | `false`       | No       |
-| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download | `false`       | No       |
+| Variable                                      | Description                                      | Default       | Required |
+| --------------------------------------------- | ------------------------------------------------ | ------------- | -------- |
+| `MCP_EMAIL_SERVER_ACCOUNT_NAME`               | Account identifier                               | `"default"`   | No       |
+| `MCP_EMAIL_SERVER_FULL_NAME`                  | Display name                                     | Email prefix  | No       |
+| `MCP_EMAIL_SERVER_EMAIL_ADDRESS`              | Email address                                    | -             | Yes      |
+| `MCP_EMAIL_SERVER_USER_NAME`                  | Login username                                   | Same as email | No       |
+| `MCP_EMAIL_SERVER_PASSWORD`                   | Email password                                   | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_HOST`                  | IMAP server host                                 | -             | Yes      |
+| `MCP_EMAIL_SERVER_IMAP_PORT`                  | IMAP server port                                 | `993`         | No       |
+| `MCP_EMAIL_SERVER_IMAP_SSL`                   | Enable IMAP SSL                                  | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_HOST`                  | SMTP server host                                 | -             | Yes      |
+| `MCP_EMAIL_SERVER_SMTP_PORT`                  | SMTP server port                                 | `465`         | No       |
+| `MCP_EMAIL_SERVER_SMTP_SSL`                   | Enable SMTP SSL                                  | `true`        | No       |
+| `MCP_EMAIL_SERVER_SMTP_START_SSL`             | Enable STARTTLS                                  | `false`       | No       |
+| `MCP_EMAIL_SERVER_ENABLE_ATTACHMENT_DOWNLOAD` | Enable attachment download                       | `false`       | No       |
+| `MCP_EMAIL_SERVER_SAVE_TO_SENT`               | Save sent emails to IMAP Sent folder             | `true`        | No       |
+| `MCP_EMAIL_SERVER_SENT_FOLDER_NAME`           | Custom Sent folder name (auto-detect if not set) | -             | No       |
 
 ### Enabling Attachment Downloads
 
@@ -111,6 +113,42 @@ enable_attachment_download = true
 ```
 
 Once enabled, you can use the `download_attachment` tool to save email attachments to a specified path.
+
+### Saving Sent Emails to IMAP Sent Folder
+
+By default, sent emails are automatically saved to your IMAP Sent folder. This ensures that emails sent via the MCP server appear in your email client (Thunderbird, webmail, etc.).
+
+The server auto-detects common Sent folder names: `Sent`, `INBOX.Sent`, `Sent Items`, `Sent Mail`, `[Gmail]/Sent Mail`.
+
+**To specify a custom Sent folder name** (useful for providers with non-standard folder names):
+
+**Option 1: Environment Variable**
+
+```json
+{
+  "mcpServers": {
+    "zerolib-email": {
+      "command": "uvx",
+      "args": ["mcp-email-server@latest", "stdio"],
+      "env": {
+        "MCP_EMAIL_SERVER_SENT_FOLDER_NAME": "INBOX.Sent"
+      }
+    }
+  }
+}
+```
+
+**Option 2: TOML Configuration**
+
+```toml
+[[emails]]
+account_name = "work"
+save_to_sent = true
+sent_folder_name = "INBOX.Sent"
+# ... rest of your email configuration
+```
+
+**To disable saving to Sent folder**, set `MCP_EMAIL_SERVER_SAVE_TO_SENT=false` or `save_to_sent = false` in your TOML config.
 
 For separate IMAP/SMTP credentials, you can also use:
 

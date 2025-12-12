@@ -586,6 +586,91 @@ class EmailClient:
 
             await smtp.send_message(msg, recipients=all_recipients)
 
+        # Return the message for potential saving to Sent folder
+        return msg
+
+    async def append_to_sent(
+        self,
+        msg: MIMEText | MIMEMultipart,
+        incoming_server: EmailServer,
+        sent_folder_name: str | None = None,
+    ) -> bool:
+        """Append a sent message to the IMAP Sent folder.
+
+        Args:
+            msg: The email message that was sent
+            incoming_server: IMAP server configuration for accessing Sent folder
+            sent_folder_name: Override folder name, or None for auto-detection
+
+        Returns:
+            True if successfully saved, False otherwise
+        """
+        imap_class = aioimaplib.IMAP4_SSL if incoming_server.use_ssl else aioimaplib.IMAP4
+        imap = imap_class(incoming_server.host, incoming_server.port)
+
+        # Common Sent folder names across different providers
+        sent_folder_candidates = [
+            sent_folder_name,  # User-specified override (if provided)
+            "Sent",
+            "INBOX.Sent",
+            "Sent Items",
+            "Sent Mail",
+            "[Gmail]/Sent Mail",
+            "INBOX/Sent",
+        ]
+        # Filter out None values
+        sent_folder_candidates = [f for f in sent_folder_candidates if f]
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(incoming_server.user_name, incoming_server.password)
+
+            # Try to find and use the Sent folder
+            for folder in sent_folder_candidates:
+                try:
+                    logger.debug(f"Trying Sent folder: '{folder}'")
+                    # Try to select the folder to verify it exists
+                    result = await imap.select(folder)
+                    logger.debug(f"Select result for '{folder}': {result}")
+
+                    # aioimaplib returns (status, data) where status is a string like 'OK' or 'NO'
+                    status = result[0] if isinstance(result, tuple) else result
+                    if str(status).upper() == "OK":
+                        # Folder exists, append the message
+                        msg_bytes = msg.as_bytes()
+                        logger.debug(f"Appending message to '{folder}'")
+                        # aioimaplib.append signature: (message_bytes, mailbox, flags, date)
+                        append_result = await imap.append(
+                            msg_bytes,
+                            mailbox=folder,
+                            flags=r"(\Seen)",
+                        )
+                        logger.debug(f"Append result: {append_result}")
+                        append_status = append_result[0] if isinstance(append_result, tuple) else append_result
+                        if str(append_status).upper() == "OK":
+                            logger.info(f"Saved sent email to '{folder}'")
+                            return True
+                        else:
+                            logger.warning(f"Failed to append to '{folder}': {append_status}")
+                    else:
+                        logger.debug(f"Folder '{folder}' select returned: {status}")
+                except Exception as e:
+                    logger.debug(f"Folder '{folder}' not available: {e}")
+                    continue
+
+            logger.warning("Could not find a valid Sent folder to save the message")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error saving to Sent folder: {e}")
+            return False
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.debug(f"Error during logout: {e}")
+
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         imap = self.imap_class(self.email_server.host, self.email_server.port)
@@ -624,6 +709,8 @@ class ClassicEmailHandler(EmailHandler):
             email_settings.outgoing,
             sender=f"{email_settings.full_name} <{email_settings.email_address}>",
         )
+        self.save_to_sent = email_settings.save_to_sent
+        self.sent_folder_name = email_settings.sent_folder_name
 
     async def get_emails_metadata(
         self,
@@ -701,9 +788,17 @@ class ClassicEmailHandler(EmailHandler):
         in_reply_to: str | None = None,
         references: str | None = None,
     ) -> None:
-        await self.outgoing_client.send_email(
+        msg = await self.outgoing_client.send_email(
             recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
         )
+
+        # Save to Sent folder if enabled
+        if self.save_to_sent and msg:
+            await self.outgoing_client.append_to_sent(
+                msg,
+                self.email_settings.incoming,
+                self.sent_folder_name,
+            )
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""

@@ -75,6 +75,8 @@ class EmailSettings(AccountAttributes):
     email_address: str
     incoming: EmailServer
     outgoing: EmailServer
+    save_to_sent: bool = True  # Save sent emails to IMAP Sent folder
+    sent_folder_name: str | None = None  # Override Sent folder name (auto-detect if None)
 
     @classmethod
     def init(
@@ -96,6 +98,8 @@ class EmailSettings(AccountAttributes):
         smtp_start_ssl: bool = False,
         smtp_user_name: str | None = None,
         smtp_password: str | None = None,
+        save_to_sent: bool = True,
+        sent_folder_name: str | None = None,
     ) -> EmailSettings:
         return cls(
             account_name=account_name,
@@ -116,6 +120,8 @@ class EmailSettings(AccountAttributes):
                 use_ssl=smtp_ssl,
                 start_ssl=smtp_start_ssl,
             ),
+            save_to_sent=save_to_sent,
+            sent_folder_name=sent_folder_name,
         )
 
     @classmethod
@@ -135,6 +141,8 @@ class EmailSettings(AccountAttributes):
         - MCP_EMAIL_SERVER_SMTP_PORT (default: 465)
         - MCP_EMAIL_SERVER_SMTP_SSL (default: true)
         - MCP_EMAIL_SERVER_SMTP_START_SSL (default: false)
+        - MCP_EMAIL_SERVER_SAVE_TO_SENT (default: true)
+        - MCP_EMAIL_SERVER_SENT_FOLDER_NAME (default: auto-detect)
         """
         # Check if minimum required environment variables are set
         email_address = os.getenv("MCP_EMAIL_SERVER_EMAIL_ADDRESS")
@@ -179,6 +187,8 @@ class EmailSettings(AccountAttributes):
                 smtp_password=os.getenv("MCP_EMAIL_SERVER_SMTP_PASSWORD", password),
                 imap_user_name=os.getenv("MCP_EMAIL_SERVER_IMAP_USER_NAME", user_name),
                 imap_password=os.getenv("MCP_EMAIL_SERVER_IMAP_PASSWORD", password),
+                save_to_sent=parse_bool(os.getenv("MCP_EMAIL_SERVER_SAVE_TO_SENT"), True),
+                sent_folder_name=os.getenv("MCP_EMAIL_SERVER_SENT_FOLDER_NAME"),
             )
         except (ValueError, TypeError) as e:
             logger.error(f"Failed to create email settings from environment variables: {e}")
@@ -303,7 +313,7 @@ class Settings(BaseSettings):
         return (TomlConfigSettingsSource(settings_cls),)
 
     def _to_toml(self) -> str:
-        data = self.model_dump()
+        data = self.model_dump(exclude_none=True)
         return tomli_w.dumps(data)
 
     def store(self) -> None:
